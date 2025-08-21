@@ -528,9 +528,9 @@ export class TextVersion {
       
       if (equalIndex === 0) {
         // 格式：=版本名 表示引用指定版本
-        if (referenceData[1] === ':') {
+        const colonIndex = referenceData.indexOf(':', 1);
+        if (colonIndex !== -1) {
           // 格式：=版本名:差异操作 表示混合引用
-          const colonIndex = referenceData.indexOf(':', 1);
           const referencedVersion = referenceData.substring(1, colonIndex);
           const diffOperations = referenceData.substring(colonIndex + 1);
           const baseText = this.getVersionText(decompressedStorage, referencedVersion) || '';
