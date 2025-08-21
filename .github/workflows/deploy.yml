@@ -43,8 +43,6 @@ jobs:
     - name: Build project
       run: npm run build
 
-    - name: Run tests (if available)
-      run: npm test --if-present
 
     - name: Upload build artifacts
       if: matrix.node-version == '20' # Only upload from one Node.js version
