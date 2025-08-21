@@ -2,7 +2,7 @@
 
 一个轻量级的文本版本管理系统，支持差异存储和版本回滚。类似于Git的版本管理机制，但专门针对文本内容进行了优化。
 
-在线预览：https://ravelloh.github.io/text-version/demo.html
+在线预览：https://ravelloh.github.io/text-version
 
 ## 特性
 
