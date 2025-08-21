@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text-Version 演示</title>
+    <style>
+        /* 更清晰、对比更高的配色，提升可读性 */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f7fb; /* 浅背景，降低疲劳 */
+            color: #1a202c; /* 深色正文，提高可读性 */
+            min-height: 100vh;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            height: 100vh;
+        }
+        
+        .left-panel, .right-panel {
+            background: #ffffff;
+            border: 1px solid #e6eef7;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+        }
+        
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            padding-right: 24px; /* 新增：给左侧面板右侧留空 */
+        }
+        
+        h1 {
+            color: #0f172a;
+            margin-bottom: 12px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.6rem;
+        }
+        
+        h2 {
+            color: #102a43;
+            margin-bottom: 14px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .input-group {
+            margin-bottom: 14px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+            color: #334155;
+            font-size: 13px;
+        }
+        
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            resize: vertical;
+            color: #0f172a;
+            background: #ffffff;
+            transition: box-shadow 0.15s ease, border-color 0.15s ease;
+            box-sizing: border-box; /* 新增：确保内边距包含在宽度内 */
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 6px 18px rgba(59,130,246,0.12);
+        }
+        
+        #textInput {
+            min-height: 120px;
+        }
+        
+        #storageDisplay {
+            min-height: 200px;
+            background-color: #fafbff;
+            font-size: 12px;
+            color: #094067;
+            border: 1px solid #e6eef7;
+            border-radius: 6px;
+            box-sizing: border-box; /* 新增：确保内边距包含在宽度内 */
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 9px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #0f172a;
+            background: #fff;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+            box-sizing: border-box; /* 新增：确保内边距包含在宽度内 */
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 6px 18px rgba(59,130,246,0.06);
+        }
+        
+        button {
+            padding: 8px 12px;
+            background-color: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-right: 8px;
+            margin-bottom: 8px;
+            transition: transform 0.08s ease, box-shadow 0.08s ease;
+            box-shadow: 0 4px 10px rgba(37,99,235,0.12);
+            font-weight: 600;
+        }
+        
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(37,99,235,0.12);
+        }
+        
+        button.danger {
+            background-color: #ef4444;
+            box-shadow: 0 4px 10px rgba(239,68,68,0.12);
+        }
+        
+        button.danger:hover {
+            background-color: #dc2626;
+        }
+        
+        button.success {
+            background-color: #16a34a;
+            box-shadow: 0 4px 10px rgba(22,163,74,0.12);
+        }
+        
+        button.success:hover {
+            background-color: #15803d;
+        }
+        
+        .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        
+        .version-list {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+        
+        .version-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            border: 1px solid #e6eef7;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            background-color: #ffffff;
+        }
+        
+        .version-item.active {
+            background-color: #eef6ff;
+            border-color: #93c5fd;
+            box-shadow: 0 6px 14px rgba(59,130,246,0.06);
+        }
+        
+        .version-info {
+            font-size: 14px;
+        }
+        
+        .version-name {
+            font-weight: 700;
+            color: #0f172a;
+        }
+        
+        .version-preview {
+            color: #475569;
+            font-size: 12px;
+            max-width: 220px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-top: 4px;
+        }
+        
+        .version-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .version-actions button {
+            padding: 6px 10px;
+            font-size: 12px;
+            margin: 0;
+            border-radius: 6px;
+            background-color: #f1f5f9;
+            color: #0f172a;
+            box-shadow: none;
+        }
+        
+        .version-actions button:hover {
+            background-color: #e2e8f0;
+        }
+        
+        .version-actions button.show {
+            background-color: #f59e0b !important;
+            color: white !important;
+            box-shadow: 0 4px 10px rgba(245,158,11,0.12);
+        }
+        
+        .version-actions button.show:hover {
+            background-color: #d97706 !important;
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px rgba(245,158,11,0.12);
+        }
+        
+        .current-content {
+            background-color: #fbfdff;
+            border: 1px solid #e6eef7;
+            border-radius: 6px;
+            padding: 15px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            white-space: pre-wrap;
+            min-height: 100px;
+            margin-bottom: 20px;
+            color: #0f172a;
+            line-height: 1.6;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(90deg,#e6f0ff 0%, #ffffff 100%);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #e6eef7;
+        }
+        
+        .stat-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #475569;
+            margin-top: 4px;
+        }
+        
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 16px;
+            background-color: #10b981;
+            color: white;
+            border-radius: 6px;
+            z-index: 1000;
+            opacity: 0;
+            transform: translateX(300px);
+            transition: all 0.25s ease;
+            font-size: 13px;
+            box-shadow: 0 10px 24px rgba(16,185,129,0.12);
+            font-weight: 600;
+        }
+        
+        .toast.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        
+        .toast.error {
+            background-color: #ef4444;
+            box-shadow: 0 10px 24px rgba(239,68,68,0.12);
+        }
+
+        /* 小屏幕微调 */
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+                height: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Text-Version 文本版本管理</h1>
+    
+    <div class="container">
+        <div class="left-panel">
+            <h2>编辑文本</h2>
+            
+            <div class="input-group">
+                <label for="textInput">文本内容：</label>
+                <textarea id="textInput" placeholder="在这里输入你的文本内容...">这是一段文本</textarea>
+            </div>
+            
+            <div class="input-group">
+                <label for="versionInput">版本名（可选）：</label>
+                <input type="text" id="versionInput" placeholder="留空则自动生成">
+            </div>
+            
+            <div class="buttons">
+                <button id="saveBtn" class="success">提交版本</button>
+                <button id="clearBtn" class="danger">清空所有</button>
+                <button id="exportBtn">导出存储</button>
+                <button id="importBtn">导入存储</button>
+            </div>
+            
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-value" id="versionCount">0</div>
+                    <div class="stat-label">版本数量</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="storageSize">0</div>
+                    <div class="stat-label">存储大小(字符)</div>
+                </div>
+            </div>
+            
+            <div class="input-group">
+                <label for="storageDisplay">内部存储格式：</label>
+                <textarea id="storageDisplay" placeholder="直接编辑存储格式..."></textarea>
+            </div>
+        </div>
+        
+        <div class="right-panel">
+            <h2>版本历史</h2>
+            
+            <div class="current-content" id="currentContent">暂无内容</div>
+            
+            <div class="version-list" id="versionList">
+                <div style="text-align: center; color: #999; padding: 20px;">
+                    暂无版本记录
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="toast" id="toast"></div>
+    
+    <!-- 隐藏的文件输入 -->
+    <input type="file" id="fileInput" accept=".txt,.json" style="display: none;">
+    
+    <!-- 先加载 diff-match-patch 库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+    <script src="dist/index.umd.js"></script>
+    <script>
+        class TextVersionDemo {
+            constructor() {
+                this.tv = new TextVersion.TextVersion();
+                this.storage = '';
+                this.currentVersion = null;
+                
+                this.initElements();
+                this.bindEvents();
+                this.updateDisplay();
+            }
+            
+            initElements() {
+                this.textInput = document.getElementById('textInput');
+                this.versionInput = document.getElementById('versionInput');
+                this.storageDisplay = document.getElementById('storageDisplay');
+                this.currentContent = document.getElementById('currentContent');
+                this.versionList = document.getElementById('versionList');
+                this.versionCount = document.getElementById('versionCount');
+                this.storageSize = document.getElementById('storageSize');
+                this.toast = document.getElementById('toast');
+                this.fileInput = document.getElementById('fileInput');
+            }
+            
+            bindEvents() {
+                document.getElementById('saveBtn').addEventListener('click', () => this.commitVersion());
+                document.getElementById('clearBtn').addEventListener('click', () => this.clearAll());
+                document.getElementById('exportBtn').addEventListener('click', () => this.exportStorage());
+                document.getElementById('importBtn').addEventListener('click', () => this.importStorage());
+                
+                this.textInput.addEventListener('input', () => this.updateCurrentContent());
+                this.storageDisplay.addEventListener('input', () => this.onStorageEdit());
+                this.fileInput.addEventListener('change', (e) => this.handleFileImport(e));
+                
+                // 键盘快捷键
+                document.addEventListener('keydown', (e) => {
+                    if (e.ctrlKey && e.key === 's') {
+                        e.preventDefault();
+                        this.commitVersion();
+                    }
+                });
+            }
+            
+            onStorageEdit() {
+                const newStorage = this.storageDisplay.value;
+                try {
+                    // 验证存储格式是否有效
+                    this.tv.log(newStorage);
+                    
+                    // 如果有效，更新内部存储
+                    this.storage = newStorage;
+                    this.currentVersion = null;
+                    
+                    // 更新其他组件显示
+                    this.updateVersionList();
+                    this.updateStats();
+                    
+                    // 尝试加载最新版本到编辑器
+                    try {
+                        const latest = this.tv.latest(this.storage);
+                        if (latest) {
+                            this.textInput.value = latest;
+                            this.updateCurrentContent();
+                        }
+                    } catch (e) {
+                        // 如果无法获取最新版本，保持当前编辑器内容
+                    }
+                    
+                } catch (error) {
+                    // 存储格式无效，暂时不更新其他组件
+                    // 可以在这里显示错误提示，但不影响用户继续编辑
+                }
+            }
+            
+            commitVersion() {
+                const text = this.textInput.value;
+                const version = this.versionInput.value.trim();
+                
+                if (!text) {
+                    this.showToast('请输入文本内容', 'error');
+                    return;
+                }
+                
+                try {
+                    this.storage = this.tv.commit(this.storage, text, version || undefined);
+                    this.versionInput.value = '';
+                    this.updateDisplay();
+                    this.showToast('版本提交成功！');
+                } catch (error) {
+                    this.showToast('提交失败: ' + error.message, 'error');
+                }
+            }
+            
+            showVersion(version) {
+                try {
+                    const content = this.tv.show(this.storage, version);
+                    if (content !== null) {
+                        this.textInput.value = content;
+                        this.currentVersion = version;
+                        this.updateDisplay();
+                        this.showToast('已切换到版本: ' + version);
+                    }
+                } catch (error) {
+                    this.showToast('加载版本失败: ' + error.message, 'error');
+                }
+            }
+            
+            resetToVersion(version) {
+                try {
+                    this.storage = this.tv.reset(this.storage, version);
+                    this.updateDisplay();
+                    this.showToast('已重置到版本 ' + version);
+                } catch (error) {
+                    this.showToast('重置失败: ' + error.message, 'error');
+                }
+            }
+            
+            squashToVersion(version) {
+                try {
+                    const originalLength = this.storage.length;
+                    this.storage = this.tv.squash(this.storage, version);
+                    const newLength = this.storage.length;
+                    const savings = Math.round((1 - newLength / originalLength) * 100);
+                    
+                    this.currentVersion = null;
+                    this.updateDisplay();
+                    this.showToast(`已压缩到版本 ${version}，节省 ${savings}% 空间`);
+                } catch (error) {
+                    this.showToast('压缩失败: ' + error.message, 'error');
+                }
+            }
+            
+            clearAll() {
+                this.storage = '';
+                this.currentVersion = null;
+                this.textInput.value = '';
+                this.updateDisplay();
+                this.showToast('所有版本已清空');
+            }
+            
+            exportStorage() {
+                if (!this.storage) {
+                    this.showToast('暂无数据可导出', 'error');
+                    return;
+                }
+                
+                const blob = new Blob([this.storage], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'text-version-storage.txt';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                this.showToast('存储已导出');
+            }
+            
+            importStorage() {
+                this.fileInput.click();
+            }
+            
+            handleFileImport(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const importedStorage = e.target.result;
+                        // 验证导入的数据
+                        this.tv.log(importedStorage);
+                        
+                        this.storage = importedStorage;
+                        this.currentVersion = null;
+                        
+                        // 加载最新版本到编辑器
+                        const latest = this.tv.latest(this.storage);
+                        this.textInput.value = latest;
+                        
+                        this.updateDisplay();
+                        this.showToast('存储导入成功');
+                    } catch (error) {
+                        this.showToast('导入失败: ' + error.message, 'error');
+                    }
+                };
+                reader.readAsText(file);
+                
+                // 清空文件输入
+                event.target.value = '';
+            }
+            
+            updateDisplay() {
+                this.updateVersionList();
+                this.updateCurrentContent();
+                this.updateStats();
+                this.updateStorageDisplay();
+            }
+            
+            updateVersionList() {
+                try {
+                    const versions = this.tv.log(this.storage);
+                    
+                    if (versions.length === 0) {
+                        this.versionList.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">暂无版本记录</div>';
+                        return;
+                    }
+                    
+                    this.versionList.innerHTML = versions.reverse().map(v => {
+                        let content;
+                        try {
+                            content = this.tv.show(this.storage, v.version);
+                        } catch (error) {
+                            content = null;
+                        }
+                        const preview = content ? content.substring(0, 30) + (content.length > 30 ? '...' : '') : '[无法显示]';
+                        const isActive = v.version === this.currentVersion;
+                        
+                        return `
+                            <div class="version-item ${isActive ? 'active' : ''}">
+                                <div class="version-info">
+                                    <div class="version-name">${v.version} ${v.isSnapshot ? '(快照)' : '(差异)'}</div>
+                                    <div class="version-preview">${preview}</div>
+                                </div>
+                                <div class="version-actions">
+                                    
+                                    <button onclick="demo.resetToVersion('${v.version}')" title="重置到此版本" class="danger">重置到此版本</button>
+                                    <button onclick="demo.squashToVersion('${v.version}')" title="压缩到此版本" class="squash">压缩到此版本</button>
+                                    <button onclick="demo.showVersion('${v.version}')" title="显示此版本" class="show">显示</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } catch (error) {
+                    this.versionList.innerHTML = `<div style="color: red; padding: 20px;">错误: ${error.message}</div>`;
+                }
+            }
+            
+            updateCurrentContent() {
+                const text = this.textInput.value;
+                this.currentContent.textContent = text || '暂无内容';
+            }
+            
+            updateStats() {
+                try {
+                    const versions = this.tv.log(this.storage);
+                    this.versionCount.textContent = versions.length;
+                    this.storageSize.textContent = this.storage.length;
+                } catch (error) {
+                    this.versionCount.textContent = '?';
+                    this.storageSize.textContent = '?';
+                }
+            }
+            
+            updateStorageDisplay() {
+                // 只有当存储输入框没有焦点时才更新，避免打断用户编辑
+                if (document.activeElement !== this.storageDisplay) {
+                    this.storageDisplay.value = this.storage;
+                }
+            }
+            
+            showToast(message, type = 'success') {
+                this.toast.textContent = message;
+                this.toast.className = 'toast show' + (type === 'error' ? ' error' : '');
+                
+                setTimeout(() => {
+                    this.toast.className = 'toast';
+                }, 3000);
+            }
+        }
+        
+        // 初始化演示
+        const demo = new TextVersionDemo();
+        
+        // 示例数据
+        setTimeout(() => {
+            demo.textInput.value = '这是一段示例文本';
+            demo.updateCurrentContent();
+        }, 100);
+    </script>
+</body>
+</html>
