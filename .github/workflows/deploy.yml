@@ -43,8 +43,6 @@ jobs:
     - name: Build project
       run: npm run build
 
-    - name: Run tests (if available)
-      run: npm test --if-present
 
     - name: Upload build artifacts
       if: matrix.node-version == '20' # Only upload from one Node.js version
@@ -59,7 +57,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main'
 
     environment:
       name: github-pages

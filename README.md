@@ -1,10 +1,10 @@
 # Text-Version
 
-> 本文档也有[中文版本](README-CN.md)
+> 本文档也有[中文版本](docs/README-CN.md)
 
 A lightweight text version management system with differential storage and version rollback capabilities. Similar to Git's version management mechanism, but specifically optimized for text content.
 
-Online preview: https://ravelloh.github.io/text-version/demo.html
+Online preview: https://ravelloh.github.io/text-version
 
 ## Features
 
