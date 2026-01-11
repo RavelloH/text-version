@@ -680,11 +680,15 @@ export class TextVersion {
    * 反转义特殊字符
    */
   private unescapeString(str: string): string {
-    return str
-      .replace(/\\t/g, '\t')
-      .replace(/\\r/g, '\r')
-      .replace(/\\n/g, '\n')
-      .replace(/\\\\/g, '\\');
+    return str.replace(/\\(.)/g, (match, char) => {
+      switch (char) {
+        case '\\': return '\\';
+        case 'n': return '\n';
+        case 'r': return '\r';
+        case 't': return '\t';
+        default: return match; // 不识别的转义序列保持原样
+      }
+    });
   }
 
   /**
