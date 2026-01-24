@@ -2,7 +2,7 @@
 
 一个轻量级的文本版本管理系统，支持差异存储和版本回滚。类似于Git的版本管理机制，但专门针对文本内容进行了优化。
 
-在线预览：https://ravelloh.github.io/text-version
+在线预览：[https://ravelloh.github.io/text-version](https://ravelloh.github.io/text-version)
 
 ## 特性
 
@@ -53,16 +53,21 @@ const tv = new TextVersion();
 ### 使用示例
 
 ```javascript
+// 导入
+import { TextVersion } from 'text-version';
+// 或者 CommonJS
+// const { TextVersion } = require('text-version');
+
 // 创建实例
 const tv = new TextVersion();
 
 // 提交新版本
-let storage = tv.commit('', '你好，世界！', 'v1');
-storage = tv.commit(storage, '你好，世界！\n这是第二行。', 'v2');
-storage = tv.commit(storage, '你好，TypeScript！\n这是第二行。');
+tv.commit('你好，世界！', 'v1');
+tv.commit('你好，世界！\n这是第二行。', 'v2');
+tv.commit('你好，TypeScript！\n这是第二行。');
 
 // 查看版本历史
-console.log(tv.log(storage));
+console.log(tv.log());
 //[
 //  { version: 'v1', isSnapshot: true },
 //  { version: 'v2', isSnapshot: false },
@@ -70,24 +75,29 @@ console.log(tv.log(storage));
 //]
 
 // 查看指定版本
-console.log(tv.show(storage, 'v1')); 
+console.log(tv.show('v1')); 
 // "你好，世界！"
 
 // 查看最新版本
-console.log(tv.latest(storage));
+console.log(tv.latest());
 // "你好，TypeScript！\n这是第二行。"
 
+// 导出版本数据
+const storage = tv.export();
 console.log(storage);
 // :2:v1:你好，世界！
 // 2:v2:R6I8:\\n这是第二行。
 // 6:ycdf93:R3D4I11:TypeScript！
 
-
 // 重置到指定版本
-storage = tv.reset(storage, 'v2');
+tv.reset('v2');
 
 // 压缩存储空间 - 将v2设为快照，删除v1
-storage = tv.squash(storage, 'v2'); // v1版本将被永久删除，v2成为新的起始快照
+tv.squash('v2'); // v1版本将被永久删除，v2成为新的起始快照
+
+// 从现有存储加载
+const tv2 = new TextVersion(storage);
+console.log(tv2.latest()); // 可以访问保存的数据
 ```
 
 ## 高级用法
@@ -98,28 +108,29 @@ storage = tv.squash(storage, 'v2'); // v1版本将被永久删除，v2成为新�
 
 ```javascript
 const tv = new TextVersion();
-let storage = '';
 
 // 创建多个版本
-storage = tv.commit(storage, '第一个版本', 'v1');
-storage = tv.commit(storage, '第二个版本', 'v2');
-storage = tv.commit(storage, '第三个版本', 'v3');
-storage = tv.commit(storage, '第四个版本', 'v4');
+tv.commit('第一个版本', 'v1');
+tv.commit('第二个版本', 'v2');
+tv.commit('第三个版本', 'v3');
+tv.commit('第四个版本', 'v4');
 
+const storage = tv.export();
 console.log('原始存储大小:', storage.length);
-console.log('版本数量:', tv.log(storage).length); // 4个版本
+console.log('版本数量:', tv.log().length); // 4个版本
 
 // 压缩到v2，删除v1
-storage = tv.squash(storage, 'v2');
+tv.squash('v2');
 
-console.log('压缩后存储大小:', storage.length);
-console.log('版本数量:', tv.log(storage).length); // 3个版本: v2, v3, v4
+const newStorage = tv.export();
+console.log('压缩后存储大小:', newStorage.length);
+console.log('版本数量:', tv.log().length); // 3个版本: v2, v3, v4
 
 // v1版本已被删除，无法访问
-console.log(tv.show(storage, 'v1')); // null
+console.log(tv.show('v1')); // null
 
 // v2及之后的版本仍可正常访问
-console.log(tv.show(storage, 'v2')); // "第二个版本"
+console.log(tv.show('v2')); // "第二个版本"
 ```
 
 ### 自定义压缩
@@ -135,16 +146,16 @@ const compressionProvider = {
   decompress: (data) => /* 解压缩算法 */ data
 };
 
-const tv = new TextVersion(compressionProvider);
-let storage = tv.commit('', '这是一段很长的文本...');
-console.log(tv.latest(storage));
+const tv = new TextVersion('', compressionProvider);
+tv.commit('这是一段很长的文本...');
+console.log(tv.latest());
 ```
 
 ### 存储格式说明
 
 内部使用长度前缀格式存储：
 
-```
+```text
 :版本名长度:版本名:内容         (快照版本)
 版本名长度:版本名:操作序列      (差异版本)
 版本名长度:版本名:=版本名       (版本引用)
@@ -152,24 +163,30 @@ console.log(tv.latest(storage));
 ```
 
 差异操作格式：
+
 - `R数字` - 保留N个字符
 - `I长度:文本` - 插入指定长度的文本
 - `D数字` - 删除N个字符
 
 #### 版本名重复处理
+
 当提交版本时发生版本名重复，系统会自动添加#后缀：
+
 - **与上一次版本号重复**: 如果新版本名与最近一次提交的版本名相同，会添加一个#，如 `v1` → `v1#`
 - **与之前的版本号重复**: 如果新版本名与历史中任意版本名相同，会根据需要添加多个#，如 `v1` → `v1#` → `v1##`
 
 #### 最优存储选择
+
 系统会自动对比以下存储方式，选择占用空间最小的：
+
 1. **普通差异**: 与上一个版本的差异 `版本名:R6I5:新内容`
 2. **混合引用**: 与历史版本的引用+差异 `版本名:=历史版本:R6I5:新内容`
 
 此外，首个版本总是快照(`:版本名:完整文本`)，后续版本存储差异。
 
 示例：
-```
+
+```test
 :2:v1:这是原始文本
 2:v2:R2I6:修改后的内容D2
 2:v3:=v1:R2I6:基于v1的修改
@@ -223,26 +240,25 @@ console.log(tv.latest(storage));
     <script>
         // TextVersion 通过全局变量 window.TextVersion 可用
         const tv = new window.TextVersion.TextVersion();
-        let storage = '';
         let versionCounter = 1;
 
         function commitVersion() {
             const text = document.getElementById('input').value;
             const version = `v${versionCounter++}`;
-            storage = tv.commit(storage, text, version);
+            tv.commit(text, version);
             
             document.getElementById('output').textContent = 
-                `版本 ${version} 已提交\n当前存储：${storage}`;
+                `版本 ${version} 已提交\n当前存储：${tv.export()}`;
         }
 
         function showLatest() {
-            const latest = tv.latest(storage);
+            const latest = tv.latest();
             document.getElementById('output').textContent = 
                 `最新版本内容：\n${latest}`;
         }
 
         function showLog() {
-            const log = tv.log(storage);
+            const log = tv.log();
             const logText = log.map(info => 
                 `${info.version} (${info.isSnapshot ? '快照' : '差异'})`
             ).join('\n');
@@ -262,46 +278,64 @@ console.log(tv.latest(storage));
 #### 构造函数
 
 ```typescript
-new TextVersion(compressionProvider?: CompressionProvider)
+new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider)
 ```
+
+**参数：**
+
+- `initialStorage` (可选): 要加载的初始版本数据字符串
+- `compressionProvider` (可选): 自定义压缩提供者
 
 ### API 方法
 
-#### `commit(storage: string, text: string, version?: string): string`
+#### `commit(text: string, version?: string): this`
+
 提交新版本，保存文本更改。
-- `storage`: 当前存储字符串
+
 - `text`: 要保存的文本内容
 - `version`: 可选的版本名，默认使用内容哈希
+- 返回: `this` 支持方法链
 
-#### `show(storage: string, version: string): string | null`
+#### `show(version: string): string | null`
+
 显示指定版本的文本内容。
-- `storage`: 存储字符串
+
 - `version`: 要查看的版本名
 - 返回: 文本内容，如果版本不存在则返回 null
 
-#### `log(storage: string): VersionInfo[]`
+#### `log(): VersionInfo[]`
+
 显示版本历史日志，获取所有版本信息。
-- `storage`: 存储字符串
+
 - 返回: 版本信息数组
 
-#### `latest(storage: string): string`
+#### `latest(): string`
+
 获取最新版本的文本内容。
-- `storage`: 存储字符串
+
 - 返回: 最新版本的文本内容
 
-#### `reset(storage: string, targetVersion: string): string`
-重置到指定版本，删除目标版本之后的所有版本。
-- `storage`: 存储字符串
-- `targetVersion`: 要重置到的版本
-- 返回: 重置后的存储字符串
+#### `reset(targetVersion: string): this`
 
-#### `squash(storage: string, targetVersion: string): string`
+重置到指定版本，删除目标版本之后的所有版本。
+
+- `targetVersion`: 要重置到的版本
+- 返回: `this` 支持方法链
+
+#### `squash(targetVersion: string): this`
+
 将指定版本设为快照并删除之前的版本，用于减少存储空间占用。
-- `storage`: 存储字符串
+
 - `targetVersion`: 要设为快照的版本（该版本之前的所有版本将被删除）
-- 返回: 压缩后的存储字符串
+- 返回: `this` 支持方法链
 
 **注意**: 此操作不可逆，会永久删除目标版本之前的所有版本历史。适用于当版本历史过长时进行存储空间优化。
+
+#### `export(): string`
+
+导出当前的版本数据。
+
+- 返回: 版本数据字符串，可用于初始化新实例
 
 ### 类型定义
 
