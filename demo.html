@@ -94,8 +94,10 @@
             min-height: 120px;
         }
 
-        #storageDisplay {
-            min-height: 200px;
+        #storageDisplay,
+        #metadataDisplay,
+        #snapshotDisplay {
+            min-height: 120px;
             background-color: #fafbff;
             font-size: 12px;
             color: #094067;
@@ -199,6 +201,8 @@
         .version-name {
             font-weight: 700;
             color: #0f172a;
+            word-break: break-word;
+            word-wrap: break-word;
         }
 
         .version-preview {
@@ -253,6 +257,8 @@
             margin-bottom: 20px;
             color: #0f172a;
             line-height: 1.6;
+            word-break: break-word;
+            word-wrap: break-word;
         }
 
         .stats {
@@ -340,7 +346,6 @@
                 <button id="saveBtn" class="success">提交版本</button>
                 <button id="clearBtn" class="danger">清空所有</button>
                 <button id="exportBtn">导出存储</button>
-                <button id="importBtn">导入存储</button>
             </div>
 
             <div class="stats">
@@ -355,8 +360,34 @@
             </div>
 
             <div class="input-group">
-                <label for="storageDisplay">内部存储格式：</label>
-                <textarea id="storageDisplay" placeholder="直接编辑存储格式..."></textarea>
+                <label>导出模式：</label>
+                <div class="buttons">
+                    <button id="monoBtn" class="success">单体式</button>
+                    <button id="separateBtn">分离式</button>
+                </div>
+            </div>
+
+            <div id="storagePanel">
+                <div class="input-group" id="monolithicPanel">
+                    <label for="storageDisplay">内部存储格式：</label>
+                    <textarea id="storageDisplay" placeholder="直接编辑存储格式..."></textarea>
+                </div>
+
+                <div id="separatePanel" style="display: none;">
+                    <div class="input-group">
+                        <label for="metadataDisplay">版本日志(metadata)：</label>
+                        <textarea id="metadataDisplay" placeholder="版本日志数据..."></textarea>
+                    </div>
+                    <div class="input-group">
+                        <label for="snapshotDisplay">最新内容(snapshot)：</label>
+                        <textarea id="snapshotDisplay" placeholder="最新版本内容..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="buttons">
+                <button id="importMonoBtn">导入单体式</button>
+                <button id="importSeparateBtn">导入分离式</button>
             </div>
         </div>
 
@@ -375,9 +406,6 @@
 
     <div class="toast" id="toast"></div>
 
-    <!-- 隐藏的文件输入 -->
-    <input type="file" id="fileInput" accept=".txt,.json" style="display: none;">
-
     <!-- 先加载 diff-match-patch 库 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
     <script src="dist/index.umd.js"></script>
@@ -386,6 +414,7 @@
             constructor() {
                 this.tv = new TextVersion.TextVersion();
                 this.currentVersion = null;
+                this.exportMode = 'monolithic'; // 'monolithic' 或 'separate'
 
                 this.initElements();
                 this.bindEvents();
@@ -395,24 +424,43 @@
             initElements() {
                 this.textInput = document.getElementById('textInput');
                 this.versionInput = document.getElementById('versionInput');
-                this.storageDisplay = document.getElementById('storageDisplay');
                 this.currentContent = document.getElementById('currentContent');
                 this.versionList = document.getElementById('versionList');
                 this.versionCount = document.getElementById('versionCount');
                 this.storageSize = document.getElementById('storageSize');
                 this.toast = document.getElementById('toast');
-                this.fileInput = document.getElementById('fileInput');
+
+                // 单体式模式
+                this.storageDisplay = document.getElementById('storageDisplay');
+                this.monolithicPanel = document.getElementById('monolithicPanel');
+
+                // 分离式模式
+                this.metadataDisplay = document.getElementById('metadataDisplay');
+                this.snapshotDisplay = document.getElementById('snapshotDisplay');
+                this.separatePanel = document.getElementById('separatePanel');
+
+                // 模式切换按钮
+                this.monoBtn = document.getElementById('monoBtn');
+                this.separateBtn = document.getElementById('separateBtn');
             }
 
             bindEvents() {
                 document.getElementById('saveBtn').addEventListener('click', () => this.commitVersion());
                 document.getElementById('clearBtn').addEventListener('click', () => this.clearAll());
                 document.getElementById('exportBtn').addEventListener('click', () => this.exportStorage());
-                document.getElementById('importBtn').addEventListener('click', () => this.importStorage());
+
+                // 导出模式切换
+                this.monoBtn.addEventListener('click', () => this.switchExportMode('monolithic'));
+                this.separateBtn.addEventListener('click', () => this.switchExportMode('separate'));
+
+                // 导入功能
+                document.getElementById('importMonoBtn').addEventListener('click', () => this.importMonolithic());
+                document.getElementById('importSeparateBtn').addEventListener('click', () => this.importSeparate());
 
                 this.textInput.addEventListener('input', () => this.updateCurrentContent());
                 this.storageDisplay.addEventListener('input', () => this.onStorageEdit());
-                this.fileInput.addEventListener('change', (e) => this.handleFileImport(e));
+                this.metadataDisplay.addEventListener('input', () => this.onSeparateEdit());
+                this.snapshotDisplay.addEventListener('input', () => this.onSeparateEdit());
 
                 // 键盘快捷键
                 document.addEventListener('keydown', (e) => {
@@ -421,6 +469,26 @@
                         this.commitVersion();
                     }
                 });
+            }
+
+            switchExportMode(mode) {
+                this.exportMode = mode;
+                const isSeparate = mode === 'separate';
+
+                // 更新按钮状态
+                if (isSeparate) {
+                    this.monoBtn.classList.remove('success');
+                    this.separateBtn.classList.add('success');
+                } else {
+                    this.monoBtn.classList.add('success');
+                    this.separateBtn.classList.remove('success');
+                }
+
+                // 切换显示的输入框
+                this.monolithicPanel.style.display = isSeparate ? 'none' : 'block';
+                this.separatePanel.style.display = isSeparate ? 'block' : 'none';
+
+                this.updateStorageDisplay();
             }
 
             onStorageEdit() {
@@ -448,10 +516,44 @@
                     } catch (e) {
                         // 如果无法获取最新版本，保持当前编辑器内容
                     }
-
                 } catch (error) {
                     // 存储格式无效，暂时不更新其他组件
-                    // 可以在这里显示错误提示，但不影响用户继续编辑
+                }
+            }
+
+            onSeparateEdit() {
+                const metadata = this.metadataDisplay.value;
+                const snapshot = this.snapshotDisplay.value;
+
+                if (!metadata && !snapshot) {
+                    return;
+                }
+
+                try {
+                    // 验证分离式数据是否有效
+                    const tempTv = new window.TextVersion.TextVersion(metadata, snapshot);
+                    tempTv.log();
+
+                    // 如果有效，更新实例
+                    this.tv = tempTv;
+                    this.currentVersion = null;
+
+                    // 更新其他组件显示
+                    this.updateVersionList();
+                    this.updateStats();
+
+                    // 尝试加载最新版本到编辑器
+                    try {
+                        const latest = this.tv.latest();
+                        if (latest) {
+                            this.textInput.value = latest;
+                            this.updateCurrentContent();
+                        }
+                    } catch (e) {
+                        // 如果无法获取最新版本，保持当前编辑器内容
+                    }
+                } catch (error) {
+                    // 数据无效，暂时不更新其他组件
                 }
             }
 
@@ -522,58 +624,111 @@
             }
 
             exportStorage() {
-                const storage = this.tv.export();
+                try {
+                    if (this.exportMode === 'separate') {
+                        const result = this.tv.export('separate');
+
+                        // 创建两个 Blob 并分别下载
+                        const metadataBlob = new Blob([result.metadata], { type: 'text/plain' });
+                        const snapshotBlob = new Blob([result.snapshot], { type: 'text/plain' });
+
+                        // 下载 metadata
+                        const metadataUrl = URL.createObjectURL(metadataBlob);
+                        const metadataLink = document.createElement('a');
+                        metadataLink.href = metadataUrl;
+                        metadataLink.download = 'text-version-metadata.txt';
+                        document.body.appendChild(metadataLink);
+                        metadataLink.click();
+                        document.body.removeChild(metadataLink);
+                        URL.revokeObjectURL(metadataUrl);
+
+                        // 下载 snapshot
+                        setTimeout(() => {
+                            const snapshotUrl = URL.createObjectURL(snapshotBlob);
+                            const snapshotLink = document.createElement('a');
+                            snapshotLink.href = snapshotUrl;
+                            snapshotLink.download = 'text-version-snapshot.txt';
+                            document.body.appendChild(snapshotLink);
+                            snapshotLink.click();
+                            document.body.removeChild(snapshotLink);
+                            URL.revokeObjectURL(snapshotUrl);
+                        }, 100);
+
+                        this.showToast('分离式数据已导出（metadata 和 snapshot 分别保存）');
+                    } else {
+                        const storage = this.tv.export();
+                        if (!storage) {
+                            this.showToast('暂无数据可导出', 'error');
+                            return;
+                        }
+
+                        const blob = new Blob([storage], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'text-version-storage.txt';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+
+                        this.showToast('单体式存储已导出');
+                    }
+                } catch (error) {
+                    this.showToast('导出失败: ' + error.message, 'error');
+                }
+            }
+
+            importMonolithic() {
+                const storage = this.storageDisplay.value.trim();
                 if (!storage) {
-                    this.showToast('暂无数据可导出', 'error');
+                    this.showToast('请在存储格式框中粘贴数据', 'error');
                     return;
                 }
 
-                const blob = new Blob([storage], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'text-version-storage.txt';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                try {
+                    const tempTv = new window.TextVersion.TextVersion(storage);
+                    tempTv.log();
 
-                this.showToast('存储已导出');
+                    this.tv = tempTv;
+                    this.currentVersion = null;
+
+                    // 加载最新版本到编辑器
+                    const latest = this.tv.latest();
+                    this.textInput.value = latest;
+
+                    this.updateDisplay();
+                    this.showToast('单体式存储导入成功');
+                } catch (error) {
+                    this.showToast('导入失败: ' + error.message, 'error');
+                }
             }
 
-            importStorage() {
-                this.fileInput.click();
-            }
+            importSeparate() {
+                const metadata = this.metadataDisplay.value.trim();
+                const snapshot = this.snapshotDisplay.value.trim();
 
-            handleFileImport(event) {
-                const file = event.target.files[0];
-                if (!file) return;
+                if (!metadata || !snapshot) {
+                    this.showToast('请在 metadata 和 snapshot 框中粘贴数据', 'error');
+                    return;
+                }
 
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    try {
-                        const importedStorage = e.target.result;
-                        // 验证导入的数据
-                        const tempTv = new window.TextVersion.TextVersion(importedStorage);
-                        tempTv.log();
+                try {
+                    const tempTv = new window.TextVersion.TextVersion(metadata, snapshot);
+                    tempTv.log();
 
-                        this.tv = tempTv;
-                        this.currentVersion = null;
+                    this.tv = tempTv;
+                    this.currentVersion = null;
 
-                        // 加载最新版本到编辑器
-                        const latest = this.tv.latest();
-                        this.textInput.value = latest;
+                    // 加载最新版本到编辑器
+                    const latest = this.tv.latest();
+                    this.textInput.value = latest;
 
-                        this.updateDisplay();
-                        this.showToast('存储导入成功');
-                    } catch (error) {
-                        this.showToast('导入失败: ' + error.message, 'error');
-                    }
-                };
-                reader.readAsText(file);
-
-                // 清空文件输入
-                event.target.value = '';
+                    this.updateDisplay();
+                    this.showToast('分离式数据导入成功');
+                } catch (error) {
+                    this.showToast('导入失败: ' + error.message, 'error');
+                }
             }
 
             updateDisplay() {
@@ -605,20 +760,19 @@
                         return `
                             <div class="version-item ${isActive ? 'active' : ''}">
                                 <div class="version-info">
-                                    <div class="version-name">${v.version} ${v.isSnapshot ? '(快照)' : '(差异)'}</div>
-                                    <div class="version-preview">${preview}</div>
+                                    <div class="version-name">${this.escapeHtml(v.version)} ${v.isSnapshot ? '(快照)' : '(差异)'}</div>
+                                    <div class="version-preview">${this.escapeHtml(preview)}</div>
                                 </div>
                                 <div class="version-actions">
-                                    
-                                    <button onclick="demo.resetToVersion('${v.version}')" title="重置到此版本" class="danger">重置到此版本</button>
-                                    <button onclick="demo.squashToVersion('${v.version}')" title="压缩到此版本" class="squash">压缩到此版本</button>
-                                    <button onclick="demo.showVersion('${v.version}')" title="显示此版本" class="show">显示</button>
+                                    <button onclick="demo.resetToVersion('${this.escapeAttr(v.version)}')" title="重置到此版本" class="danger">重置</button>
+                                    <button onclick="demo.squashToVersion('${this.escapeAttr(v.version)}')" title="压缩到此版本" class="squash">压缩</button>
+                                    <button onclick="demo.showVersion('${this.escapeAttr(v.version)}')" title="显示此版本" class="show">显示</button>
                                 </div>
                             </div>
                         `;
                     }).join('');
                 } catch (error) {
-                    this.versionList.innerHTML = `<div style="color: red; padding: 20px;">错误: ${error.message}</div>`;
+                    this.versionList.innerHTML = `<div style="color: red; padding: 20px;">错误: ${this.escapeHtml(error.message)}</div>`;
                 }
             }
 
@@ -639,9 +793,19 @@
             }
 
             updateStorageDisplay() {
-                // 只有当存储输入框没有焦点时才更新，避免打断用户编辑
-                if (document.activeElement !== this.storageDisplay) {
-                    this.storageDisplay.value = this.tv.export();
+                // 只有当对应的输入框没有焦点时才更新，避免打断用户编辑
+                if (this.exportMode === 'separate') {
+                    const result = this.tv.export('separate');
+                    if (document.activeElement !== this.metadataDisplay) {
+                        this.metadataDisplay.value = result.metadata;
+                    }
+                    if (document.activeElement !== this.snapshotDisplay) {
+                        this.snapshotDisplay.value = result.snapshot;
+                    }
+                } else {
+                    if (document.activeElement !== this.storageDisplay) {
+                        this.storageDisplay.value = this.tv.export();
+                    }
                 }
             }
 
@@ -652,6 +816,18 @@
                 setTimeout(() => {
                     this.toast.className = 'toast';
                 }, 3000);
+            }
+
+            // XSS 防护：转义 HTML
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            // XSS 防护：转义属性值
+            escapeAttr(text) {
+                return text.replace(/'/g, '&#x27;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             }
         }
 
