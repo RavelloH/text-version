@@ -387,6 +387,8 @@ export class TextVersion {
    * @param mode 导出模式，"monolithic" 为单体模式（默认），"separate" 为分离式存储
    * @returns 如果 mode 为 "separate"，返回包含 metadata 和 snapshot 的对象；否则返回完整字符串
    */
+  export(mode: "separate"): { metadata: string; snapshot: string };
+  export(mode?: "monolithic" | undefined): string;
   export(mode?: "monolithic" | "separate"): string | { metadata: string; snapshot: string } {
     // 确保存储已同步
     this.syncToStorage();
