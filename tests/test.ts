@@ -104,10 +104,11 @@ test("log - 返回正确的版本信息", () => {
   tv.commit("v1", "v1");
   tv.commit("v2", "v2");
   const log = tv.log();
+  // 新策略：最新版本（v2）是快照，第一个版本（v1）是差异
   if (
     log.length !== 2 ||
-    !log[0].isSnapshot ||
-    log[1].isSnapshot ||
+    log[0].isSnapshot || // v1 不再是快照
+    !log[1].isSnapshot || // v2 现在是快照
     log[0].version !== "v1" ||
     log[1].version !== "v2"
   ) {
@@ -138,7 +139,7 @@ test("export - 导出版本数据", () => {
   const tv = new TextVersion();
   tv.commit("Hello", "v1");
   const storage = tv.export();
-  if (!storage || storage.length === 0) {
+  if (typeof storage !== "string" || !storage || storage.length === 0) {
     throw new Error("导出数据失败");
   }
 });
@@ -148,6 +149,7 @@ test("initialStorage - 从存储加载数据", () => {
   tv1.commit("Hello", "v1");
   tv1.commit("World", "v2");
   const storage = tv1.export();
+  if (typeof storage !== "string") throw new Error("导出类型错误");
 
   const tv2 = new TextVersion(storage);
   if (tv2.log().length !== 2 || tv2.latest() !== "World") {
@@ -162,6 +164,7 @@ test("export/import - 数据完整性", () => {
   tv1.commit("Third", "v3");
 
   const storage = tv1.export();
+  if (typeof storage !== "string") throw new Error("导出类型错误");
   const tv2 = new TextVersion(storage);
 
   if (
@@ -224,9 +227,10 @@ test("squash - 压缩后目标版本变为快照", () => {
   tv.commit("v3", "v3");
   tv.squash("v2");
   const log = tv.log();
-  const v2Info = log.find((v) => v.version === "v2");
-  if (!v2Info || !v2Info.isSnapshot) {
-    throw new Error("squash 后目标版本应为快照");
+  // 新策略：squash 后最新版本（v3）是快照
+  const v3Info = log.find((v) => v.version === "v3");
+  if (!v3Info || !v3Info.isSnapshot) {
+    throw new Error("squash 后最新版本应为快照");
   }
 });
 
@@ -276,7 +280,7 @@ test("版本引用 - 相同内容使用引用", () => {
   tv.commit("相同内容", "v1");
   tv.commit("相同内容", "v2");
   const storage = tv.export();
-  if (!storage.includes("=v1")) {
+  if (typeof storage !== "string" || !storage.includes("=v1")) {
     throw new Error("未使用版本引用");
   }
 });
@@ -300,7 +304,10 @@ test("差异存储 - 增量存储节省空间", () => {
   // 注意：需要考虑版本名、分隔符等元数据的开销
   const twoFullTexts = "Hello, World!" + "Hello, TypeScript!";
   // 差异存储至少应该比两倍完整文本小
-  if (storage.length >= twoFullTexts.length * 2) {
+  if (
+    typeof storage !== "string" ||
+    storage.length >= twoFullTexts.length * 2
+  ) {
     throw new Error("差异存储未节省空间");
   }
 });
@@ -611,6 +618,7 @@ test("复杂场景 - 混合特殊字符与中文", () => {
   const text = "你好\n世界\t测试:数据=值\\路径";
   tv.commit(text, "mixed");
   const storage = tv.export();
+  if (typeof storage !== "string") throw new Error("导出类型错误");
   const tv2 = new TextVersion(storage);
   if (tv2.show("mixed") !== text) {
     throw new Error("混合特殊字符与中文导出导入失败");
@@ -739,7 +747,7 @@ test("压缩提供者 - 自定义压缩", () => {
   tv.commit("Test data", "v1");
   const storage = tv.export();
   // 应该是 base64 编码
-  if (!/^[A-Za-z0-9+/=]+$/.test(storage)) {
+  if (typeof storage !== "string" || !/^[A-Za-z0-9+/=]+$/.test(storage)) {
     throw new Error("压缩提供者未生效");
   }
 });
@@ -754,6 +762,7 @@ test("压缩提供者 - 压缩后可恢复", () => {
   tv1.commit("More data", "v2");
 
   const storage = tv1.export();
+  if (typeof storage !== "string") throw new Error("导出类型错误");
   const tv2 = new TextVersion(storage, compressionProvider);
 
   if (tv2.show("v1") !== "Test data" || tv2.show("v2") !== "More data") {
@@ -817,8 +826,10 @@ test("数据完整性 - 导出导入多次", () => {
   tv1.commit("v2", "v2");
 
   const storage1 = tv1.export();
+  if (typeof storage1 !== "string") throw new Error("导出类型错误");
   const tv2 = new TextVersion(storage1);
   const storage2 = tv2.export();
+  if (typeof storage2 !== "string") throw new Error("导出类型错误");
   const tv3 = new TextVersion(storage2);
   const storage3 = tv3.export();
 
@@ -834,12 +845,14 @@ test("数据完整性 - 操作后导出导入", () => {
   tv1.commit("v3", "v3");
 
   const storage1 = tv1.export();
+  if (typeof storage1 !== "string") throw new Error("导出类型错误");
 
   const tv2 = new TextVersion(storage1);
   tv2.commit("v4", "v4");
   tv2.reset("v3");
 
   const storage2 = tv2.export();
+  if (typeof storage2 !== "string") throw new Error("导出类型错误");
   const tv3 = new TextVersion(storage2);
 
   if (tv3.log().length !== 3 || tv3.latest() !== "v3") {
@@ -948,15 +961,17 @@ test("极端场景 - 快照和差异混合", () => {
   const tv = new TextVersion();
   tv.commit("v1", "v1");
   tv.commit("v2", "v2");
-  tv.squash("v2"); // v2 变成快照
+  tv.squash("v2"); // squash 后 v2 变成最新版本，是快照
   tv.commit("v3", "v3");
   tv.commit("v4", "v4");
 
   const log = tv.log();
   const v2Info = log.find((v) => v.version === "v2");
   const v3Info = log.find((v) => v.version === "v3");
+  const v4Info = log.find((v) => v.version === "v4");
 
-  if (!v2Info?.isSnapshot || v3Info?.isSnapshot) {
+  // 新策略：最新版本（v4）总是快照，v2 和 v3 是差异
+  if (!v4Info?.isSnapshot || v2Info?.isSnapshot || v3Info?.isSnapshot) {
     throw new Error("快照和差异混合处理失败");
   }
 });
@@ -1101,6 +1116,204 @@ test("全面复杂文本测试", () => {
       );
     }
   });
+});
+
+// 测试：分离式存储
+test("分离式存储 - 基本功能", () => {
+  const tv = new TextVersion();
+  tv.commit("第一个版本", "v1");
+  tv.commit("第二个版本", "v2");
+  tv.commit("第三个版本", "v3");
+
+  const result = tv.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  if (!result.metadata || !result.snapshot) {
+    throw new Error("分离式导出缺少必要字段");
+  }
+
+  // 快照应该是最新版本的内容
+  if (result.snapshot !== "第三个版本") {
+    throw new Error("快照内容不正确");
+  }
+
+  // metadata 应该包含占位符
+  if (!result.metadata.includes("##[[")) {
+    throw new Error("metadata 应包含占位符");
+  }
+});
+
+test("分离式存储 - 导入功能", () => {
+  const tv1 = new TextVersion();
+  tv1.commit("第一个版本", "v1");
+  tv1.commit("第二个版本", "v2");
+  tv1.commit("第三个版本", "v3");
+
+  const result = tv1.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  // 使用分离的数据创建新实例
+  const tv2 = new TextVersion(result.metadata, result.snapshot);
+
+  if (tv2.latest() !== "第三个版本") {
+    throw new Error("导入后最新版本不正确");
+  }
+
+  if (tv2.show("v1") !== "第一个版本") {
+    throw new Error("导入后历史版本不正确");
+  }
+
+  if (tv2.log().length !== 3) {
+    throw new Error("导入后版本数量不正确");
+  }
+});
+
+test("分离式存储 - 哈希验证", () => {
+  const tv1 = new TextVersion();
+  tv1.commit("测试内容", "v1");
+
+  const result = tv1.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  // 尝试使用错误的快照内容
+  try {
+    new TextVersion(result.metadata, "错误的内容");
+    throw new Error("应该抛出哈希不匹配错误");
+  } catch (e) {
+    if (!(e instanceof Error) || !e.message.includes("哈希不匹配")) {
+      throw new Error("错误信息不正确");
+    }
+  }
+});
+
+test("分离式存储 - 向后兼容", () => {
+  const tv1 = new TextVersion();
+  tv1.commit("版本1", "v1");
+  tv1.commit("版本2", "v2");
+
+  // 普通导出
+  const normalExport = tv1.export() as string;
+
+  // 普通导入应该仍然工作
+  const tv2 = new TextVersion(normalExport);
+  if (tv2.latest() !== "版本2") {
+    throw new Error("普通导入不工作");
+  }
+});
+
+test("分离式存储 - 兼容v1格式", () => {
+  const versionData = `:2:v1:这是一段示例文本\n2:v2:R6D2\n2:v3:R4D2\n2:v4:R2D2\n2:v5:R2I2:文本`;
+  const data = [
+    "这是一段示例文本",
+    "这是一段示例",
+    "这是一段",
+    "这是",
+    "这是文本",
+  ];
+  const tv1 = new TextVersion(versionData);
+
+  // 验证每个版本内容
+  data.forEach((content, index) => {
+    const version = `v${index + 1}`;
+    const retrieved = tv1.show(version);
+    if (retrieved !== content) {
+      throw new Error(
+        `版本 ${version} 内容不匹配: 期望 "${content}", 实际 "${retrieved}"`,
+      );
+    }
+  });
+});
+
+test("分离式存储 - 空实例", () => {
+  const tv = new TextVersion();
+  const result = tv.export("separate");
+
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  if (result.metadata !== "" || result.snapshot !== "") {
+    throw new Error("空实例导出应该返回空字符串");
+  }
+});
+
+test("分离式存储 - 压缩提供者兼容", () => {
+  const compressionProvider = {
+    compress: (data: string) => Buffer.from(data).toString("base64"),
+    decompress: (data: string) => Buffer.from(data, "base64").toString(),
+  };
+
+  const tv1 = new TextVersion("", compressionProvider);
+  tv1.commit("测试数据", "v1");
+  tv1.commit("更多数据", "v2");
+
+  const result = tv1.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  // 使用压缩提供者导入
+  const tv2 = new TextVersion(
+    result.metadata,
+    result.snapshot,
+    compressionProvider,
+  );
+  const latest = tv2.latest();
+  if (latest !== "更多数据") {
+    throw new Error(
+      `使用压缩提供者导入失败: 期望 "更多数据", 实际 "${latest}"`,
+    );
+  }
+
+  // 验证历史版本也正常
+  if (tv2.show("v1") !== "测试数据") {
+    throw new Error("压缩提供者导入后历史版本不正确");
+  }
+});
+
+test("分离式存储 - 特殊字符处理", () => {
+  const tv1 = new TextVersion();
+  tv1.commit("普通文本", "v1");
+  tv1.commit("特殊字符: \n\r\t:=\\", "v2");
+
+  const result = tv1.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  const tv2 = new TextVersion(result.metadata, result.snapshot);
+  if (tv2.latest() !== "特殊字符: \n\r\t:=\\") {
+    throw new Error("特殊字符处理失败");
+  }
+});
+
+test("分离式存储 - 大文本性能", () => {
+  const tv1 = new TextVersion();
+  const largeText = "A".repeat(10000);
+  tv1.commit("小文本", "v1");
+  tv1.commit(largeText, "v2");
+
+  const result = tv1.export("separate");
+  if (typeof result === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+
+  // metadata 应该比完整导出小
+  const normalExport = tv1.export() as string;
+  if (result.metadata.length >= normalExport.length) {
+    throw new Error("分离式存储没有节省空间");
+  }
+
+  const tv2 = new TextVersion(result.metadata, result.snapshot);
+  if (tv2.latest() !== largeText) {
+    throw new Error("大文本导入失败");
+  }
 });
 
 // 输出测试结果

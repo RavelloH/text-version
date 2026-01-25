@@ -10,8 +10,8 @@
 - **`show`**: 显示指定版本内容（类似 git show）
 - **`log`**: 显示版本历史（类似 git log）
 - **`latest`**: 获取最新版本内容
-- **`reset`**: 重置到指定版本（类似 git reset --hard）
-- **`squash`**: 将指定版本设为快照并删除之前的版本，减少存储空间
+- **`reset`**: 重置到指定版本（类似 git reset --hard），保留目标版本及之前的所有版本，删除之后的版本
+- **`squash`**: 保留目标版本及之后的所有版本，删除之前的版本，减少存储空间
 
 ### 存储格式优化特性
 
@@ -69,9 +69,9 @@ tv.commit('你好，TypeScript！\n这是第二行。');
 // 查看版本历史
 console.log(tv.log());
 //[
-//  { version: 'v1', isSnapshot: true },
-//  { version: 'v2', isSnapshot: false },
-//  { version: 'ycdf93', isSnapshot: false }
+//  { version: 'v1', isSnapshot: false },  // 差异
+//  { version: 'v2', isSnapshot: false },  // 差异
+//  { version: 'ycdf93', isSnapshot: true } // 快照（最新）
 //]
 
 // 查看指定版本
@@ -82,12 +82,14 @@ console.log(tv.show('v1'));
 console.log(tv.latest());
 // "你好，TypeScript！\n这是第二行。"
 
-// 导出版本数据
+// 导出版本数据（单体模式 - 默认）
 const storage = tv.export();
+// 或显式指定单体模式
+const storage2 = tv.export("monolithic");
 console.log(storage);
-// :2:v1:你好，世界！
-// 2:v2:R6I8:\\n这是第二行。
-// 6:ycdf93:R3D4I11:TypeScript！
+// 2:v1:R6D7
+// 2:v2:R3D10I2:世界
+// :6:ycdf93:你好，TypeScript！\n这是第二行。
 
 // 重置到指定版本
 tv.reset('v2');
@@ -131,6 +133,8 @@ console.log(tv.show('v1')); // null
 
 // v2及之后的版本仍可正常访问
 console.log(tv.show('v2')); // "第二个版本"
+
+// 注意：squash后，v4（最新版本）是快照，v2和v3是差异
 ```
 
 ### 自定义压缩
@@ -150,6 +154,46 @@ const tv = new TextVersion('', compressionProvider);
 tv.commit('这是一段很长的文本...');
 console.log(tv.latest());
 ```
+
+### 分离式存储
+
+当快照内容很大时，可以使用分离式存储来更灵活地管理数据：
+
+```javascript
+const tv = new TextVersion();
+tv.commit('第一个版本', 'v1');
+tv.commit('第二个版本', 'v2');
+tv.commit('非常非常非常长的最新版本内容...', 'v3');
+
+// 分离式导出
+const result = tv.export("separate");
+// result = {
+//   metadata: "2:v1:D6I4:原始文本\n2:v2:D5\n:2:v3:##[[abc12345]]##",
+//   snapshot: "非常非常非常长的最新版本内容..."
+// }
+// 注意：##[[abc12345]]## 是快照内容的哈希占位符，用于验证完整性
+
+// metadata 中包含占位符，快照内容单独存储
+console.log(result.metadata.length); // 很小
+console.log(result.snapshot.length); // 很大
+
+// 使用分离的数据创建实例（自动验证哈希）
+const tv2 = new TextVersion(result.metadata, result.snapshot);
+console.log(tv2.latest()); // "非常非常非常长的最新版本内容..."
+
+// 如果快照哈希不匹配，会抛出错误（防止数据篡改）
+try {
+  new TextVersion(result.metadata, '错误的快照内容');
+} catch (e) {
+  console.error('哈希验证失败'); // 快照内容与metadata中的哈希不匹配
+}
+```
+
+**使用场景**：
+
+- **大快照内容**：当最新版本内容非常大时，可以将快照单独存储在文件系统或数据库中
+- **CDN 优化**：metadata 可以放在 CDN，snapshot 按需加载
+- **缓存策略**：可以对 metadata 和 snapshot 使用不同的缓存策略
 
 ### 存储格式说明
 
@@ -179,18 +223,27 @@ console.log(tv.latest());
 
 系统会自动对比以下存储方式，选择占用空间最小的：
 
-1. **普通差异**: 与上一个版本的差异 `版本名:R6I5:新内容`
+1. **普通差异**: 与上一个版本的反向差异 `版本名:R6I5:旧内容`
 2. **混合引用**: 与历史版本的引用+差异 `版本名:=历史版本:R6I5:新内容`
 
-此外，首个版本总是快照(`:版本名:完整文本`)，后续版本存储差异。
+**重要**: 新策略下，**最新版本总是快照**，历史版本存储从新到旧的反向差异。
 
 示例：
 
-```test
-:2:v1:这是原始文本
-2:v2:R2I6:修改后的内容D2
-2:v3:=v1:R2I6:基于v1的修改
-2:v1#:=v1
+依次commit以下内容：
+
+- 原始文本
+- 修改后的内容
+- 这是最新的修改后的内容
+- 原始文本
+
+结构如下，从后往前看：
+
+```text
+2:v1:D6I4:原始文本 // 与"修改后的内容"相比，删除6个字符，插入"原始文本"
+2:v2:D5 // 与"这是最新的修改后的内容"相比，删除5个字符得到"修改后的内容"
+:2:v3:这是最新的修改后的内容 // v3作为快照版本
+2:v4:=v1 // 最新版本就是v1的引用
 ```
 
 ## CDN 使用方式
@@ -279,12 +332,23 @@ console.log(tv.latest());
 
 ```typescript
 new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider)
+new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider)
 ```
 
 **参数：**
 
+**普通导入：**
+
 - `initialStorage` (可选): 要加载的初始版本数据字符串
 - `compressionProvider` (可选): 自定义压缩提供者
+
+**分离式导入：**
+
+- `metadata`: 版本记录字符串（包含占位符）
+- `snapshot`: 快照内容字符串
+- `compressionProvider` (可选): 自定义压缩提供者
+
+**注意**：分离式导入时，会验证快照内容的哈希值。如果不匹配，会抛出错误。
 
 ### API 方法
 
@@ -317,25 +381,39 @@ new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvid
 
 #### `reset(targetVersion: string): this`
 
-重置到指定版本，删除目标版本之后的所有版本。
+重置到指定版本，**保留目标版本及之前的所有版本**，删除目标版本之后的所有版本。
 
-- `targetVersion`: 要重置到的版本
+- `targetVersion`: 要重置到的版本（保留）
 - 返回: `this` 支持方法链
+
+**注意**: 重置后，目标版本会自动变成快照（因为它成为最新版本），之前的版本会被转换为差异存储。
 
 #### `squash(targetVersion: string): this`
 
-将指定版本设为快照并删除之前的版本，用于减少存储空间占用。
+**保留目标版本及之后的所有版本**，删除目标版本之前的所有版本，用于减少存储空间占用。
 
-- `targetVersion`: 要设为快照的版本（该版本之前的所有版本将被删除）
+- `targetVersion`: 保留的起始版本（保留，该版本之前的所有版本将被删除）
 - 返回: `this` 支持方法链
 
-**注意**: 此操作不可逆，会永久删除目标版本之前的所有版本历史。适用于当版本历史过长时进行存储空间优化。
+**注意**: 此操作不可逆，会永久删除目标版本之前（早于目标版本）的所有版本历史。
 
-#### `export(): string`
+#### `export(mode?: "monolithic" | "separate"): string | { metadata: string; snapshot: string }`
 
 导出当前的版本数据。
 
-- 返回: 版本数据字符串，可用于初始化新实例
+- `mode` (可选): 导出模式
+  - `"monolithic"`: 单体模式，返回完整的版本数据字符串（默认）
+  - `"separate"`: 分离式存储，返回包含 `metadata` 和 `snapshot` 的对象
+  - 未提供时默认为 `"monolithic"`
+- 返回:
+  - 单体模式：返回完整的版本数据字符串
+  - 分离模式：返回包含 `metadata` 和 `snapshot` 的对象
+
+**分离式导出说明**：
+
+- `metadata`: 版本记录字符串，快照内容被替换为 `##[[hash]]##` 占位符
+- `snapshot`: 最新版本的完整快照内容
+- `hash`: 8位短哈希，用于验证快照内容的完整性
 
 ### 类型定义
 
@@ -360,10 +438,13 @@ interface DiffOperation {
 ## 性能考虑
 
 - **空间效率**：差异存储显著减少存储空间，特别是对于小幅修改
-- **时间复杂度**：获取版本的时间复杂度取决于从最近快照到目标版本的距离
-- **快照策略**：第一个版本总是快照，后续版本存储差异
+- **时间复杂度**：
+  - **最新版本**：O(1) 时间复杂度（直接读取快照）⚡
+  - **历史版本**：需要从最新快照反向应用差异，时间取决于版本距离
+- **快照策略**：最新版本总是快照，历史版本存储反向差异
 - **压缩**：可通过自定义压缩提供者进一步优化存储
 - **存储优化**：使用 `squash` 方法定期清理历史版本，避免存储空间无限增长
+- **适用场景**：特别适合频繁访问最新版本的应用（如实时编辑器、协同文档）
 
 ### 最佳实践
 

@@ -32,13 +32,28 @@ export class TextVersion {
   private compressionProvider?: CompressionProvider;
   private dmp: InstanceType<typeof diff_match_patch>;
   private storage: string;
+  private static readonly SNAPSHOT_PLACEHOLDER_PREFIX = "##[[";
+  private static readonly SNAPSHOT_PLACEHOLDER_SUFFIX = "]]##";
 
   constructor(
     initialStorage?: string,
+    snapshotOrCompression?: string | CompressionProvider,
     compressionProvider?: CompressionProvider,
   ) {
-    this.storage = initialStorage || "";
-    this.compressionProvider = compressionProvider;
+    // 先设置compression provider，因为 mergeSnapshotIntoStorage 需要用到
+    if (typeof snapshotOrCompression === "string") {
+      // 三参数形式: (storage, snapshot, compressionProvider)
+      this.compressionProvider = compressionProvider;
+      this.storage = this.mergeSnapshotIntoStorage(
+        initialStorage || "",
+        snapshotOrCompression,
+      );
+    } else {
+      // 两参数形式: (storage, compressionProvider)
+      this.compressionProvider = snapshotOrCompression;
+      this.storage = initialStorage || "";
+    }
+
     // 在UMD环境中，diff_match_patch直接就是构造函数
     if (typeof window !== "undefined" && (window as any).diff_match_patch) {
       this.dmp = new (window as any).diff_match_patch();
@@ -87,14 +102,20 @@ export class TextVersion {
       // 第一个版本，存储完整文本
       parsedData.snapshots[versionName] = text;
     } else {
-      // 对于非第一个版本，只考虑差异存储，与所有历史版本进行对比，选择最优的差异方式
-      const bestStorage = this.findBestDiffOption(
-        parsedData,
-        text,
-        versionName,
-        decompressed,
-      );
-      parsedData.deltas[versionName] = bestStorage.content;
+      // 新策略：将新版本作为快照，将前一个版本转换为差异
+      const previousVersion = parsedData.versions[parsedData.versions.length - 2];
+      const previousText = this.getVersionText(decompressed, previousVersion) || "";
+      
+      // 计算从新文本到旧文本的反向差异
+      const reverseDiff = this.calculateDiff(text, previousText);
+      const reverseDiffContent = this.encodeDiff(reverseDiff);
+      
+      // 删除前一个版本的快照，将其改为差异版本
+      delete parsedData.snapshots[previousVersion];
+      parsedData.deltas[previousVersion] = reverseDiffContent;
+      
+      // 将新版本设为快照
+      parsedData.snapshots[versionName] = text;
     }
 
     const newStorage = this.serializeStorage(parsedData);
@@ -169,13 +190,31 @@ export class TextVersion {
       deltas: {} as Record<string, string>,
     };
 
-    // 保留需要的快照和增量
-    for (const v of keepVersions) {
-      if (parsedData.snapshots[v]) {
-        newParsedData.snapshots[v] = parsedData.snapshots[v];
-      }
-      if (parsedData.deltas[v]) {
-        newParsedData.deltas[v] = parsedData.deltas[v];
+    // 获取目标版本的完整文本
+    const targetText = this.getVersionText(decompressed, targetVersion);
+    if (targetText === null) {
+      throw new Error(`无法获取版本 ${targetVersion} 的内容`);
+    }
+
+    // 新策略：将目标版本设为快照（因为它现在是最新版本）
+    newParsedData.snapshots[targetVersion] = targetText;
+
+    // 对于目标版本之前的所有版本，计算反向差异
+    if (keepVersions.length > 1) {
+      let currentText = targetText;
+      for (let i = keepVersions.length - 2; i >= 0; i--) {
+        const version = keepVersions[i];
+        const versionText = this.getVersionText(decompressed, version);
+        if (versionText === null) {
+          throw new Error(`无法获取版本 ${version} 的内容`);
+        }
+        
+        // 计算从当前文本到这个版本的反向差异
+        const reverseDiff = this.calculateDiff(currentText, versionText);
+        const reverseDiffContent = this.encodeDiff(reverseDiff);
+        newParsedData.deltas[version] = reverseDiffContent;
+        
+        currentText = versionText;
       }
     }
 
@@ -187,6 +226,7 @@ export class TextVersion {
   /**
    * 获取最新版本的文本
    * @returns 最新版本的文本内容，如果没有版本则返回空字符串
+   * 优化：由于最新版本始终是快照，这是 O(1) 操作
    */
   latest(): string {
     const decompressed = this.decompress(this.storage);
@@ -197,6 +237,12 @@ export class TextVersion {
     }
 
     const latestVersion = parsedData.versions[parsedData.versions.length - 1];
+    // 最新版本应该始终是快照
+    if (parsedData.snapshots[latestVersion]) {
+      return parsedData.snapshots[latestVersion];
+    }
+    
+    // 兼容旧数据：如果最新版本不是快照，则使用 getVersionText
     return this.getVersionText(decompressed, latestVersion) || "";
   }
 
@@ -230,13 +276,35 @@ export class TextVersion {
     // 将目标版本设为快照
     newParsedData.snapshots[targetVersion] = targetText;
 
-    // 保留目标版本之后的版本
-    for (let i = targetIndex + 1; i < parsedData.versions.length; i++) {
-      const version = parsedData.versions[i];
-      if (parsedData.snapshots[version]) {
-        newParsedData.snapshots[version] = parsedData.snapshots[version];
-      } else if (parsedData.deltas[version]) {
-        newParsedData.deltas[version] = parsedData.deltas[version];
+    // 对于目标版本之后的每个版本，重新构建差异
+    if (newParsedData.versions.length > 1) {
+      // 在新策略下，我们需要从后往前重建
+      // 找到最后一个版本的完整文本
+      const lastVersion = newParsedData.versions[newParsedData.versions.length - 1];
+      const lastText = this.getVersionText(decompressed, lastVersion);
+      if (lastText === null) {
+        throw new Error(`无法获取版本 ${lastVersion} 的内容`);
+      }
+      
+      // 最后一个版本设为快照
+      delete newParsedData.snapshots[targetVersion];
+      newParsedData.snapshots[lastVersion] = lastText;
+      
+      // 从后往前构建反向差异
+      let currentText = lastText;
+      for (let i = newParsedData.versions.length - 2; i >= 0; i--) {
+        const version = newParsedData.versions[i];
+        const versionText = this.getVersionText(decompressed, version);
+        if (versionText === null) {
+          throw new Error(`无法获取版本 ${version} 的内容`);
+        }
+        
+        // 计算从当前文本到这个版本的反向差异
+        const reverseDiff = this.calculateDiff(currentText, versionText);
+        const reverseDiffContent = this.encodeDiff(reverseDiff);
+        newParsedData.deltas[version] = reverseDiffContent;
+        
+        currentText = versionText;
       }
     }
 
@@ -247,23 +315,102 @@ export class TextVersion {
 
   /**
    * 导出当前的版本数据
-   * @returns 版本数据字符串
+   * @param mode 导出模式，"monolithic" 为单体模式（默认），"separate" 为分离式存储
+   * @returns 如果 mode 为 "separate"，返回包含 metadata 和 snapshot 的对象；否则返回完整字符串
    */
-  export(): string {
-    return this.storage;
+  export(mode?: "monolithic" | "separate"): string | { metadata: string; snapshot: string } {
+    if (mode !== "separate") {
+      return this.storage;
+    }
+
+    // 分离式导出
+    const decompressed = this.decompress(this.storage);
+    const parsedData = this.parseStorage(decompressed);
+
+    // 找到最新版本的快照
+    if (parsedData.versions.length === 0) {
+      return { metadata: "", snapshot: "" };
+    }
+
+    const latestVersion = parsedData.versions[parsedData.versions.length - 1];
+    const snapshotContent = parsedData.snapshots[latestVersion] || "";
+
+    // 生成快照内容的哈希（8位固定长度）
+    const snapshotHash = this.generateHash(snapshotContent, 8);
+
+    // 将快照内容替换为占位符
+    const placeholder = `${TextVersion.SNAPSHOT_PLACEHOLDER_PREFIX}${snapshotHash}${TextVersion.SNAPSHOT_PLACEHOLDER_SUFFIX}`;
+    const modifiedSnapshots = { ...parsedData.snapshots };
+    if (modifiedSnapshots[latestVersion]) {
+      modifiedSnapshots[latestVersion] = placeholder;
+    }
+
+    // 序列化修改后的数据
+    const modifiedData = {
+      versions: parsedData.versions,
+      snapshots: modifiedSnapshots,
+      deltas: parsedData.deltas,
+    };
+    const metadata = this.compress(this.serializeStorage(modifiedData));
+
+    return { metadata, snapshot: snapshotContent };
   }
 
   /**
-   * 生成文本的哈希值作为版本名
+   * 生成文本的哈希值
+   * @param text 要哈希的文本
+   * @param length 可选，指定返回哈希的固定长度（会补0）
+   * @returns 哈希字符串
    */
-  private generateHash(text: string): string {
+  private generateHash(text: string, length?: number): string {
     let hash = 0;
     for (let i = 0; i < text.length; i++) {
       const char = text.charCodeAt(i);
       hash = (hash << 5) - hash + char;
       hash = hash & hash; // 转换为32位整数
     }
-    return Math.abs(hash).toString(36);
+    const hashStr = Math.abs(hash).toString(36);
+    
+    if (length !== undefined) {
+      // 返回固定长度的哈希
+      return hashStr.substring(0, length).padStart(length, '0');
+    }
+    return hashStr;
+  }
+
+  /**
+   * 将分离的快照内容合并回存储
+   */
+  private mergeSnapshotIntoStorage(metadata: string, snapshot: string): string {
+    const decompressed = this.decompress(metadata);
+    
+    // 检查是否包含占位符（需要转义方括号）
+    const placeholderRegex = new RegExp(
+      `${TextVersion.SNAPSHOT_PLACEHOLDER_PREFIX.replace(/[[\]]/g, '\\$&')}([a-z0-9]+)${TextVersion.SNAPSHOT_PLACEHOLDER_SUFFIX.replace(/[[\]]/g, '\\$&')}`,
+      'g'
+    );
+    
+    const match = placeholderRegex.exec(decompressed);
+    if (!match) {
+      // 没有占位符，直接返回原始数据
+      return metadata;
+    }
+
+    const expectedHash = match[1];
+    const actualHash = this.generateHash(snapshot, 8); // 使用统一的哈希函数，8位长度
+
+    if (expectedHash !== actualHash) {
+      throw new Error(
+        `快照哈希不匹配: 期望 ${expectedHash}, 实际 ${actualHash}`
+      );
+    }
+
+    // 替换占位符
+    const placeholder = `${TextVersion.SNAPSHOT_PLACEHOLDER_PREFIX}${expectedHash}${TextVersion.SNAPSHOT_PLACEHOLDER_SUFFIX}`;
+    const escapedSnapshot = this.escapeString(snapshot);
+    const merged = decompressed.replace(placeholder, escapedSnapshot);
+
+    return this.compress(merged);
   }
 
   /**
@@ -556,7 +703,43 @@ export class TextVersion {
   }
 
   /**
+   * 反向应用差异操作（从新文本还原到旧文本）
+   * 将 insert 变成 delete，delete 变成 insert，retain 保持不变
+   */
+  private applyReverseDiff(text: string, operations: DiffOperation[]): string {
+    let result = "";
+    let textIndex = 0;
+
+    for (const op of operations) {
+      switch (op.type) {
+        case "retain":
+          // retain 操作反向也是 retain
+          result += text.substring(textIndex, textIndex + op.length!);
+          textIndex += op.length!;
+          break;
+        case "delete":
+          // delete 操作反向变成 insert（跳过不处理，但保留原文本的这些字符）
+          // 在反向应用时，原来的 delete 意味着这些字符应该被插入回结果
+          // 但由于我们存储的是正向diff，需要特殊处理
+          break;
+        case "insert":
+          // insert 操作反向变成 delete（跳过新文本中插入的字符）
+          textIndex += op.text!.length;
+          break;
+      }
+    }
+
+    // 保留剩余的文本
+    if (textIndex < text.length) {
+      result += text.substring(textIndex);
+    }
+
+    return result;
+  }
+
+  /**
    * 获取指定版本的文本内容
+   * 新策略：从最新快照开始，反向应用差异
    */
   private getVersionText(
     decompressedStorage: string,
@@ -600,12 +783,12 @@ export class TextVersion {
       }
     }
 
-    // 找到最近的快照
+    // 新策略：从后往前找最近的快照（应该是最新的版本）
     const versionIndex = parsedData.versions.indexOf(version);
     let baseText = "";
     let baseIndex = -1;
 
-    for (let i = versionIndex; i >= 0; i--) {
+    for (let i = parsedData.versions.length - 1; i >= versionIndex; i--) {
       const v = parsedData.versions[i];
       if (parsedData.snapshots[v]) {
         baseText = parsedData.snapshots[v];
@@ -614,17 +797,58 @@ export class TextVersion {
       }
     }
 
-    // 应用从快照到目标版本的所有增量
+    if (baseIndex === -1) {
+      // 没找到快照，向前查找（兼容旧数据）
+      for (let i = versionIndex; i >= 0; i--) {
+        const v = parsedData.versions[i];
+        if (parsedData.snapshots[v]) {
+          baseText = parsedData.snapshots[v];
+          baseIndex = i;
+          break;
+        }
+      }
+      
+      // 如果找到的快照在目标版本之前，使用正向应用（兼容旧策略）
+      if (baseIndex !== -1 && baseIndex < versionIndex) {
+        let currentText = baseText;
+        for (let i = baseIndex + 1; i <= versionIndex; i++) {
+          const v = parsedData.versions[i];
+          if (parsedData.deltas[v]) {
+            if (parsedData.deltas[v].startsWith("=")) {
+              const referenceData = parsedData.deltas[v];
+              const colonIndex = referenceData.indexOf(":", 1);
+              if (colonIndex !== -1) {
+                const referencedVersion = referenceData.substring(1, colonIndex);
+                const diffOperations = referenceData.substring(colonIndex + 1);
+                const refText =
+                  this.getVersionText(decompressedStorage, referencedVersion) || "";
+                const operations = this.decodeDiff(diffOperations);
+                currentText = this.applyDiff(refText, operations);
+              } else {
+                const referencedVersion = referenceData.substring(1);
+                currentText =
+                  this.getVersionText(decompressedStorage, referencedVersion) || "";
+              }
+            } else {
+              const operations = this.decodeDiff(parsedData.deltas[v]);
+              currentText = this.applyDiff(currentText, operations);
+            }
+          }
+        }
+        return currentText;
+      }
+    }
+
+    // 新策略：从最新快照反向应用差异到目标版本
     let currentText = baseText;
-    for (let i = baseIndex + 1; i <= versionIndex; i++) {
+    for (let i = baseIndex - 1; i >= versionIndex; i--) {
       const v = parsedData.versions[i];
       if (parsedData.deltas[v]) {
         if (parsedData.deltas[v].startsWith("=")) {
-          // 处理引用版本
+          // 处理引用版本（在反向遍历中很少见）
           const referenceData = parsedData.deltas[v];
           const colonIndex = referenceData.indexOf(":", 1);
           if (colonIndex !== -1) {
-            // 混合引用：获取引用版本内容并应用差异
             const referencedVersion = referenceData.substring(1, colonIndex);
             const diffOperations = referenceData.substring(colonIndex + 1);
             const refText =
@@ -632,13 +856,12 @@ export class TextVersion {
             const operations = this.decodeDiff(diffOperations);
             currentText = this.applyDiff(refText, operations);
           } else {
-            // 纯引用：直接获取引用版本内容
             const referencedVersion = referenceData.substring(1);
             currentText =
               this.getVersionText(decompressedStorage, referencedVersion) || "";
           }
         } else {
-          // 普通差异
+          // 反向应用差异：存储的是从新到旧的差异
           const operations = this.decodeDiff(parsedData.deltas[v]);
           currentText = this.applyDiff(currentText, operations);
         }

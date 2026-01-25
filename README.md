@@ -12,8 +12,8 @@ Online preview: [https://ravelloh.github.io/text-version](https://ravelloh.githu
 - **`show`**: Display specified version content (similar to git show)
 - **`log`**: Display version history (similar to git log)
 - **`latest`**: Get latest version content
-- **`reset`**: Reset to specified version (similar to git reset --hard)
-- **`squash`**: Set specified version as snapshot and delete previous versions to reduce storage space
+- **`reset`**: Reset to specified version (similar to git reset --hard), keep the target version and all versions before it, delete versions after it
+- **`squash`**: Keep the target version and all versions after it, delete versions before it to reduce storage space
 
 ### Storage Format Optimization Features
 
@@ -71,9 +71,9 @@ tv.commit('Hello, TypeScript!\\nThis is the second line.');
 // View version history
 console.log(tv.log());
 //[
-//  { version: 'v1', isSnapshot: true },
-//  { version: 'v2', isSnapshot: false },
-//  { version: 'ycdf93', isSnapshot: false }
+//  { version: 'v1', isSnapshot: false },  // diff
+//  { version: 'v2', isSnapshot: false },  // diff
+//  { version: 'ycdf93', isSnapshot: true } // snapshot (latest)
 //]
 
 // View specified version
@@ -84,12 +84,14 @@ console.log(tv.show('v1'));
 console.log(tv.latest());
 // "Hello, TypeScript!\\nThis is the second line."
 
-// Export version data
+// Export version data (monolithic mode - default)
 const storage = tv.export();
+// Or explicitly specify monolithic mode
+const storage2 = tv.export("monolithic");
 console.log(storage);
-// :2:v1:Hello, World!
-// 2:v2:R13I18:\\nThis is the second line.
-// 6:ycdf93:R7D6I11:TypeScript!
+// 2:v1:R6D7
+// 2:v2:R3D10I2:world
+// :6:ycdf93:hello, TypeScript！\nThis is the second line.
 
 // Reset to specified version
 tv.reset('v2');
@@ -133,6 +135,8 @@ console.log(tv.show('v1')); // null
 
 // v2 and later versions can still be accessed normally
 console.log(tv.show('v2')); // "Second version"
+
+// Note: After squash, v4 (latest version) is a snapshot, v2 and v3 are diffs
 ```
 
 ### Custom Compression
@@ -152,6 +156,46 @@ const tv = new TextVersion('', compressionProvider);
 tv.commit('This is a very long text...');
 console.log(tv.latest());
 ```
+
+### Separate Storage
+
+When snapshot content is very large, you can use separate storage for more flexible data management:
+
+```javascript
+const tv = new TextVersion();
+tv.commit('First version', 'v1');
+tv.commit('Second version', 'v2');
+tv.commit('Very very very long latest version content...', 'v3');
+
+// Separate export
+const result = tv.export("separate");
+// result = {
+//   metadata: "2:v1:D6I4:original text\n2:v2:D5\n:2:v3:##[[abc12345]]##",
+//   snapshot: "Very very very long latest version content..."
+// }
+// Note: ##[[abc12345]]## is a hash placeholder for snapshot content, used for integrity verification
+
+// metadata contains placeholder, snapshot stored separately
+console.log(result.metadata.length); // small
+console.log(result.snapshot.length); // large
+
+// Create instance with separated data (auto-validates hash)
+const tv2 = new TextVersion(result.metadata, result.snapshot);
+console.log(tv2.latest()); // "Very very very long latest version content..."
+
+// Error will be thrown if snapshot hash doesn't match (prevents data tampering)
+try {
+  new TextVersion(result.metadata, 'wrong snapshot content');
+} catch (e) {
+  console.error('Hash validation failed'); // Snapshot content doesn't match hash in metadata
+}
+```
+
+**Use Cases**:
+
+- **Large snapshot content**: When latest version content is very large, snapshot can be stored separately in filesystem or database
+- **CDN optimization**: metadata can be served from CDN, snapshot loaded on demand
+- **Cache strategy**: Use different cache strategies for metadata and snapshot
 
 ### Storage Format Description
 
@@ -181,18 +225,18 @@ When version name duplication occurs during submission, the system automatically
 
 The system automatically compares the following storage methods and selects the one with minimum space:
 
-1. **Normal diff**: Difference with previous version `version_name:R6I5:new_content`
+1. **Normal diff**: Reverse difference with previous version `version_name:R6I5:old_content`
 2. **Hybrid reference**: Reference to historical version + diff `version_name:=historical_version:R6I5:new_content`
 
-Additionally, the first version is always a snapshot (`:version_name:complete_text`), subsequent versions store differences.
+**Important**: Under the new strategy, the **latest version is always a snapshot**, historical versions store reverse diffs from new to old.
 
 Example:
 
 ```text
-:2:v1:This is original text
-2:v2:R4I8:modified content D2
-2:v3:=v1:R4I8:modification based on v1
-2:v1#:=v1
+2:v1:R8D8I13:original text  # v1 is reverse diff (from v2 to v1)
+2:v2:R4I8:modified content D2  # v2 is reverse diff (from v3 to v2)
+:2:v3:This is latest modified content  # v3 is snapshot (latest version)
+2:v1#:=v1  # Reference to v1
 ```
 
 ## CDN Usage
@@ -281,12 +325,23 @@ Besides npm installation, you can also use directly via CDN:
 
 ```typescript
 new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider)
+new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider)
 ```
 
 **Parameters:**
 
+**Normal Import:**
+
 - `initialStorage` (optional): Initial version data string to load
 - `compressionProvider` (optional): Custom compression provider
+
+**Separate Import:**
+
+- `metadata`: Version record string (containing placeholder)
+- `snapshot`: Snapshot content string
+- `compressionProvider` (optional): Custom compression provider
+
+**Note**: When using separate import, the hash value of snapshot content will be validated. An error will be thrown if it doesn't match.
 
 ### API Methods
 
@@ -319,25 +374,39 @@ Get text content of latest version.
 
 #### `reset(targetVersion: string): this`
 
-Reset to specified version, delete all versions after target version.
+Reset to specified version, **keep the target version and all versions before it**, delete all versions after the target version.
 
-- `targetVersion`: Version to reset to
+- `targetVersion`: Version to reset to (kept)
 - Returns: `this` for method chaining
+
+**Note**: After reset, the target version automatically becomes a snapshot (as it becomes the latest version), and previous versions are converted to differential storage.
 
 #### `squash(targetVersion: string): this`
 
-Set specified version as snapshot and delete previous versions, used to reduce storage space.
+**Keep the target version and all versions after it**, delete all versions before the specified version, used to reduce storage space.
 
-- `targetVersion`: Version to set as snapshot (all versions before this will be deleted)
+- `targetVersion`: Starting version to keep (kept, all versions before this will be deleted)
 - Returns: `this` for method chaining
 
-**Note**: This operation is irreversible and will permanently delete all version history before the target version. Suitable for storage space optimization when version history becomes too long.
+**Note**: This operation is irreversible and will permanently delete all version history before the target version. After squash, the **latest version** becomes a snapshot, while the target version and intermediate versions are stored as diffs. Suitable for storage space optimization when version history becomes too long.
 
-#### `export(): string`
+#### `export(mode?: "monolithic" | "separate"): string | { metadata: string; snapshot: string }`
 
 Export current version data.
 
-- Returns: Version data string that can be used to initialize new instances
+- `mode` (optional): Export mode
+  - `"monolithic"`: Monolithic mode, returns complete version data string (default)
+  - `"separate"`: Separate storage, returns object containing `metadata` and `snapshot`
+  - Defaults to `"monolithic"` when not provided
+- Returns:
+  - Monolithic mode: Complete version data string
+  - Separate mode: Object containing `metadata` and `snapshot`
+
+**Separate Export Explanation**:
+
+- `metadata`: Version record string, snapshot content replaced with `##[[hash]]##` placeholder
+- `snapshot`: Complete snapshot content of latest version
+- `hash`: 8-character short hash for validating snapshot content integrity
 
 ### Type Definitions
 
@@ -362,10 +431,13 @@ interface DiffOperation {
 ## Performance Considerations
 
 - **Space efficiency**: Differential storage significantly reduces storage space, especially for small modifications
-- **Time complexity**: Time complexity to get a version depends on the distance from the nearest snapshot to the target version
-- **Snapshot strategy**: First version is always a snapshot, subsequent versions store differences
+- **Time complexity**:
+  - **Latest version**: O(1) time complexity (direct snapshot read) ⚡
+  - **Historical versions**: Requires reverse application of diffs from latest snapshot, time depends on version distance
+- **Snapshot strategy**: Latest version is always a snapshot, historical versions store reverse diffs
 - **Compression**: Can be further optimized through custom compression providers
 - **Storage optimization**: Use `squash` method periodically to clean up historical versions and prevent unlimited storage growth
+- **Use cases**: Particularly suitable for applications that frequently access the latest version (e.g., real-time editors, collaborative documents)
 
 ### Best Practices
 
