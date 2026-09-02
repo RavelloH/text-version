@@ -26,6 +26,17 @@ export interface CompressionProvider {
 }
 
 /**
+ * 文本版本存储策略选项
+ */
+export interface TextVersionOptions {
+  /**
+   * 是否在提交时比较直接反向差异、已有引用和混合引用。
+   * 默认为 true；关闭后只使用相邻版本的反向差异，便于基准对比。
+   */
+  optimizeDiffStorage?: boolean;
+}
+
+/**
  * 解析后的存储数据结构
  */
 interface ParsedData {
@@ -41,6 +52,7 @@ export class TextVersion {
   private compressionProvider?: CompressionProvider;
   private dmp: InstanceType<typeof diff_match_patch>;
   private storage: string;
+  private optimizeDiffStorage: boolean;
   private static readonly SNAPSHOT_PLACEHOLDER_PREFIX = "##[[";
   private static readonly SNAPSHOT_PLACEHOLDER_SUFFIX = "]]##";
 
@@ -53,19 +65,42 @@ export class TextVersion {
   constructor(
     initialStorage?: string,
     snapshotOrCompression?: string | CompressionProvider,
-    compressionProvider?: CompressionProvider,
+    compressionProviderOrOptions?: CompressionProvider | TextVersionOptions,
+    options?: TextVersionOptions,
   ) {
+    const isCompressionProvider = (
+      value: CompressionProvider | TextVersionOptions | undefined,
+    ): value is CompressionProvider =>
+      !!value &&
+      typeof value === "object" &&
+      "compress" in value &&
+      "decompress" in value;
+
+    const inlineOptions = isCompressionProvider(compressionProviderOrOptions)
+      ? undefined
+      : compressionProviderOrOptions;
+    this.optimizeDiffStorage =
+      options?.optimizeDiffStorage ?? inlineOptions?.optimizeDiffStorage ?? true;
+
     // 先设置compression provider，因为 mergeSnapshotIntoStorage 需要用到
     if (typeof snapshotOrCompression === "string") {
       // 三参数形式: (storage, snapshot, compressionProvider)
-      this.compressionProvider = compressionProvider;
+      this.compressionProvider = isCompressionProvider(
+        compressionProviderOrOptions,
+      )
+        ? compressionProviderOrOptions
+        : undefined;
       this.storage = this.mergeSnapshotIntoStorage(
         initialStorage || "",
         snapshotOrCompression,
       );
     } else {
       // 两参数形式: (storage, compressionProvider)
-      this.compressionProvider = snapshotOrCompression;
+      this.compressionProvider = isCompressionProvider(snapshotOrCompression)
+        ? snapshotOrCompression
+        : isCompressionProvider(compressionProviderOrOptions)
+          ? compressionProviderOrOptions
+          : undefined;
       this.storage = initialStorage || "";
     }
 
@@ -168,14 +203,31 @@ export class TextVersion {
       // 新策略：将新版本作为快照，将前一个版本转换为差异
       const previousVersion = parsedData.versions[parsedData.versions.length - 1];
       const previousText = this.getVersionTextFromParsed(parsedData, previousVersion) || "";
-      
-      // 计算从新文本到旧文本的反向差异
-      const reverseDiff = this.calculateDiff(text, previousText);
-      const reverseDiffContent = this.encodeDiff(reverseDiff);
+
+      // 计算从新文本到旧文本的反向差异，或选择更短的历史引用表示
+      const diffOption = this.optimizeDiffStorage
+        ? this.findBestDiffOption(parsedData, text, previousVersion)
+        : {
+            content: this.encodeDiff(this.calculateDiff(text, previousText)),
+          };
+
+      // 混合引用只能依赖独立快照。若候选版本当前通过反向差异依赖
+      // previousVersion，则先将其提升为快照，避免形成循环引用。
+      if (diffOption.snapshotVersion) {
+        const snapshotText = this.getVersionTextFromParsed(
+          parsedData,
+          diffOption.snapshotVersion,
+        );
+        if (snapshotText === null) {
+          throw new Error(`无法获取版本 ${diffOption.snapshotVersion} 的内容`);
+        }
+        parsedData.snapshots[diffOption.snapshotVersion] = snapshotText;
+        delete parsedData.deltas[diffOption.snapshotVersion];
+      }
       
       // 删除前一个版本的快照，将其改为差异版本
       delete parsedData.snapshots[previousVersion];
-      parsedData.deltas[previousVersion] = reverseDiffContent;
+      parsedData.deltas[previousVersion] = diffOption.content;
       
       // 将新版本设为快照
       parsedData.versions.push(versionName);
@@ -509,59 +561,151 @@ export class TextVersion {
   }
 
   /**
-   * 寻找最优的差异存储选项（仅限差异，不包括快照）
+   * 寻找反向差异模型下最优的存储选项（仅限目标版本的差异，不包括快照）
    * @param parsedData 解析的存储数据
-   * @param text 新的文本内容
-   * @param versionName 新版本名
-   * @param decompressedStorage 解压缩的存储字符串
-   * @returns 最优差异存储选项
+   * @param latestText 新提交的最新文本，也是直接反向差异的基准
+   * @param targetVersion 要替换其快照的上一版本
+   * @returns 最优差异存储内容
    */
   private findBestDiffOption(
-    parsedData: {
-      versions: string[];
-      snapshots: Record<string, string>;
-      deltas: Record<string, string>;
-    },
-    text: string,
-    versionName: string,
-    decompressedStorage: string,
-  ): { content: string } {
-    const options: Array<{ content: string; length: number }> = [];
+    parsedData: ParsedData,
+    latestText: string,
+    targetVersion: string,
+  ): { content: string; snapshotVersion?: string } {
+    const options: Array<{
+      content: string;
+      length: number;
+      snapshotVersion?: string;
+    }> = [];
+    const targetText = this.getVersionTextFromParsed(parsedData, targetVersion);
 
-    // 选项1: 与上一个版本的差异
-    // 注意：parsedData.versions已经包含了新版本，所以上一个版本是倒数第二个
-    if (parsedData.versions.length > 1) {
-      const latestVersion = parsedData.versions[parsedData.versions.length - 2]; // 倒数第二个
-      const latestText =
-        this.getVersionText(decompressedStorage, latestVersion) || "";
-      const diff = this.calculateDiff(latestText, text);
-      const diffContent = this.encodeDiff(diff);
-      const serialized = `${versionName.length}:${versionName}:${diffContent}`;
-      options.push({
-        content: diffContent,
-        length: serialized.length,
-      });
+    if (targetText === null) {
+      throw new Error(`无法获取版本 ${targetVersion} 的内容`);
     }
 
-    // 选项2: 与其他历史版本的混合差异
-    // 排除最后一个版本（新版本）和倒数第二个版本（已在选项1中处理）
-    for (let i = 0; i < parsedData.versions.length - 2; i++) {
+    const hasSnapshot = (version: string): boolean =>
+      Object.prototype.hasOwnProperty.call(parsedData.snapshots, version);
+
+    // 候选方案只会改动 targetVersion，以及可选的锚点版本。
+    // 预先计算现有各行长度，避免每个候选都重新序列化整份历史。
+    const currentEntries = new Map<string, string>();
+    for (const version of parsedData.versions) {
+      currentEntries.set(
+        version,
+        this.serializeVersionEntry(
+          version,
+          parsedData.snapshots,
+          parsedData.deltas,
+        ),
+      );
+    }
+    const currentLineCount = [...currentEntries.values()].filter(
+      (entry) => entry.length > 0,
+    ).length;
+    const currentStorageLength =
+      [...currentEntries.values()].reduce((sum, entry) => sum + entry.length, 0) +
+      Math.max(0, currentLineCount - 1);
+
+    const getCandidateStorageLength = (
+      content: string,
+      snapshotVersion?: string,
+      snapshotText?: string,
+    ): number => {
+      const replacements = new Map<string, string>();
+      replacements.set(
+        targetVersion,
+        this.serializeVersionEntry(
+          targetVersion,
+          {},
+          { [targetVersion]: content },
+        ),
+      );
+
+      if (snapshotVersion && snapshotText !== undefined) {
+        replacements.set(
+          snapshotVersion,
+          this.serializeVersionEntry(
+            snapshotVersion,
+            { [snapshotVersion]: snapshotText },
+            {},
+          ),
+        );
+      }
+
+      let candidateStorageLength = currentStorageLength;
+      let candidateLineCount = currentLineCount;
+      for (const [version, replacement] of replacements) {
+        const currentEntry = currentEntries.get(version) || "";
+        candidateStorageLength += replacement.length - currentEntry.length;
+        candidateLineCount +=
+          (replacement.length > 0 ? 1 : 0) -
+          (currentEntry.length > 0 ? 1 : 0);
+      }
+
+      return (
+        candidateStorageLength +
+        Math.max(0, candidateLineCount - 1) -
+        Math.max(0, currentLineCount - 1)
+      );
+    };
+
+    const addOption = (
+      content: string,
+      snapshotVersion?: string,
+      snapshotText?: string,
+    ): void => {
+      options.push({
+        content,
+        // 比较完整的目标版本存储结果，而不是只比较候选差异本身。
+        // 这样在使用更早版本时，会把将该版本提升为快照的成本计入比较。
+        length: getCandidateStorageLength(
+          content,
+          snapshotVersion,
+          snapshotText,
+        ),
+        snapshotVersion,
+      });
+    };
+
+    // 选项1: 从最新快照到目标版本的直接反向差异
+    addOption(this.encodeDiff(this.calculateDiff(latestText, targetText)));
+
+    // 如果目标版本本来就是一个独立的引用，保留它也是一个候选项。
+    // 普通反向差异依赖新的最新快照，已有引用则不依赖，因此可以安全复用。
+    const existingDelta = parsedData.deltas[targetVersion];
+    if (!hasSnapshot(targetVersion) && existingDelta?.startsWith("=")) {
+      addOption(existingDelta);
+    }
+
+    // 选项2: 以更早版本为基准的混合差异。
+    // 目标版本是提交前的最新版本，只允许引用它之前的版本，避免循环引用。
+    const targetIndex = parsedData.versions.indexOf(targetVersion);
+    for (let i = 0; i < targetIndex; i++) {
       const baseVersion = parsedData.versions[i];
-      const baseText =
-        this.getVersionText(decompressedStorage, baseVersion) || "";
-      const diff = this.calculateDiff(baseText, text);
+      const baseText = this.getVersionTextFromParsed(parsedData, baseVersion);
+      if (baseText === null) {
+        continue;
+      }
+
+      // 混合引用中的差异是从引用版本到目标版本的正向差异。
+      const diff = this.calculateDiff(baseText, targetText);
       const diffContent = this.encodeDiff(diff);
       const hybridContent = `=${baseVersion}:${diffContent}`;
-      const serialized = `${versionName.length}:${versionName}:${hybridContent}`;
-      options.push({
-        content: hybridContent,
-        length: serialized.length,
-      });
+      addOption(
+        hybridContent,
+        hasSnapshot(baseVersion) ? undefined : baseVersion,
+        baseText,
+      );
     }
 
     // 选择最短的选项
-    options.sort((a, b) => a.length - b.length);
-    return options[0];
+    const bestOption = options.reduce((best, option) =>
+      option.length < best.length ? option : best,
+    );
+    return {
+      content: bestOption.content,
+      snapshotVersion: bestOption.snapshotVersion,
+    };
   }
 
   /**
@@ -864,12 +1008,14 @@ export class TextVersion {
       }
     }
 
-    // 新策略：从后往前找最近的快照（应该是最新的版本）
+    // 新策略：从目标版本开始向后找最近的快照。
+    // 最优存储可能保留多个快照，不能直接跳到最末尾的快照，
+    // 否则会跨过中间快照对应的版本边界。
     const versionIndex = parsedData.versions.indexOf(version);
     let baseText = "";
     let baseIndex = -1;
 
-    for (let i = parsedData.versions.length - 1; i >= versionIndex; i--) {
+    for (let i = versionIndex; i < parsedData.versions.length; i++) {
       const v = parsedData.versions[i];
       if (parsedData.snapshots[v]) {
         baseText = parsedData.snapshots[v];
@@ -996,12 +1142,12 @@ export class TextVersion {
       }
     }
 
-    // 新策略：从后往前找最近的快照（应该是最新的版本）
+    // 新策略：从目标版本开始向后找最近的快照。
     const versionIndex = parsedData.versions.indexOf(version);
     let baseText = "";
     let baseIndex = -1;
 
-    for (let i = parsedData.versions.length - 1; i >= versionIndex; i--) {
+    for (let i = versionIndex; i < parsedData.versions.length; i++) {
       const v = parsedData.versions[i];
       if (parsedData.snapshots[v]) {
         baseText = parsedData.snapshots[v];
@@ -1169,6 +1315,25 @@ export class TextVersion {
   /**
    * 序列化存储格式
    */
+  private serializeVersionEntry(
+    version: string,
+    snapshots: Record<string, string>,
+    deltas: Record<string, string>,
+  ): string {
+    if (snapshots[version]) {
+      // 快照版本: :版本名长度:版本名:内容
+      const content = this.escapeString(snapshots[version]);
+      return `:${version.length}:${version}:${content}`;
+    }
+
+    if (deltas[version]) {
+      // 差异版本: 版本名长度:版本名:操作序列
+      return `${version.length}:${version}:${deltas[version]}`;
+    }
+
+    return "";
+  }
+
   private serializeStorage(data: {
     versions: string[];
     snapshots: Record<string, string>;
@@ -1177,33 +1342,13 @@ export class TextVersion {
     const lines: string[] = [];
 
     for (const version of data.versions) {
-      if (data.snapshots[version]) {
-        // 快照版本: :版本名长度:版本名:内容
-        const content = this.escapeString(data.snapshots[version]);
-        lines.push(`:${version.length}:${version}:${content}`);
-      } else if (data.deltas[version]) {
-        // 差异版本: 版本名长度:版本名:操作序列
-        // 检查是否是版本引用（以 = 开头）
-        const deltaContent = data.deltas[version];
-        let serializedDelta: string;
-
-        if (deltaContent.startsWith("=")) {
-          // 版本引用或混合引用
-          const colonIndex = deltaContent.indexOf(":", 1);
-          if (colonIndex !== -1) {
-            // 混合引用：=版本名:差异内容
-            // 差异内容不需要转义，因为encodeDiff已经处理了
-            serializedDelta = deltaContent;
-          } else {
-            // 纯版本引用：=版本名
-            serializedDelta = deltaContent;
-          }
-        } else {
-          // 普通差异内容不需要转义，因为encodeDiff已经处理了编码
-          serializedDelta = deltaContent;
-        }
-
-        lines.push(`${version.length}:${version}:${serializedDelta}`);
+      const entry = this.serializeVersionEntry(
+        version,
+        data.snapshots,
+        data.deltas,
+      );
+      if (entry) {
+        lines.push(entry);
       }
     }
 

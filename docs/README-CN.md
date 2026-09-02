@@ -21,8 +21,8 @@
 - **压缩支持**: 可选的数据压缩接口
 - **智能差异**: 使用 LCS 算法计算最优差异
 - **版本名去重**: 自动处理重复版本名，通过添加#后缀避免冲突
-- **最优存储选择**: 对比所有历史版本，自动选择存储空间最小的差异方式
-- **混合引用**: 支持版本引用与差异操作的组合，进一步优化存储效率
+- **最优存储选择**: 新快照替换上一版本时，对比直接反向差异和更早版本引用，保留占用空间最小的表示
+- **混合引用**: 支持 `=版本:操作序列`，从更早版本应用正向差异还原上一版本，同时保持反向差异读取模型
 
 ## 安装
 
@@ -197,7 +197,7 @@ try {
 
 ### 存储格式说明
 
-内部使用长度前缀格式存储：
+内部使用长度前缀格式存储。正常提交新版本时，最新版本保存为快照，上一版本在以下方式中选择占用空间最小的一种：
 
 ```text
 :版本名长度:版本名:内容         (快照版本)
@@ -224,9 +224,9 @@ try {
 系统会自动对比以下存储方式，选择占用空间最小的：
 
 1. **普通差异**: 与上一个版本的反向差异 `版本名:R6I5:旧内容`
-2. **混合引用**: 与历史版本的引用+差异 `版本名:=历史版本:R6I5:新内容`
+2. **混合引用**: 引用更早版本并应用到上一版本的正向差异 `版本名:=历史版本:R6I5:上一版本内容`
 
-**重要**: 新策略下，**最新版本总是快照**，历史版本存储从新到旧的反向差异。
+**重要**: 反向差异策略下，非重复提交产生的新版本是快照，历史版本存储从新到旧的反向差异。混合引用只允许指向更早版本，因此不会形成循环引用。
 
 示例：
 
@@ -331,8 +331,8 @@ try {
 #### 构造函数
 
 ```typescript
-new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider)
-new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider)
+new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider, options?: TextVersionOptions)
+new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider, options?: TextVersionOptions)
 ```
 
 **参数：**
@@ -341,6 +341,14 @@ new TextVersion(metadata: string, snapshot: string, compressionProvider?: Compre
 
 - `initialStorage` (可选): 要加载的初始版本数据字符串
 - `compressionProvider` (可选): 自定义压缩提供者
+
+可选的 `options` 参数可以关闭最优差异选择，用于进行基准对比：
+
+```javascript
+const baseline = new TextVersion(undefined, undefined, {
+  optimizeDiffStorage: false
+});
+```
 
 **分离式导入：**
 
@@ -428,6 +436,10 @@ interface CompressionProvider {
   decompress(data: string): string;
 }
 
+interface TextVersionOptions {
+  optimizeDiffStorage?: boolean; // 默认开启；可关闭以进行基准对比
+}
+
 interface DiffOperation {
   type: 'retain' | 'insert' | 'delete';
   length?: number;  // retain和delete操作的字符数
@@ -441,10 +453,11 @@ interface DiffOperation {
 - **时间复杂度**：
   - **最新版本**：O(1) 时间复杂度（直接读取快照）⚡
   - **历史版本**：需要从最新快照反向应用差异，时间取决于版本距离
-- **快照策略**：最新版本总是快照，历史版本存储反向差异
+- **快照策略**：非重复提交的最新版本是快照；相同内容可以使用引用，历史版本使用反向差异或安全的混合引用
 - **压缩**：可通过自定义压缩提供者进一步优化存储
 - **存储优化**：使用 `squash` 方法定期清理历史版本，避免存储空间无限增长
 - **适用场景**：特别适合频繁访问最新版本的应用（如实时编辑器、协同文档）
+- **基准测试**：运行 `pnpm tsx tests/performance-test.ts`，可对比最优存储与仅相邻反向差异策略在提交和读取场景下的指标
 
 ### 最佳实践
 

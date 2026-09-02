@@ -970,9 +970,18 @@ test("极端场景 - 快照和差异混合", () => {
   const v3Info = log.find((v) => v.version === "v3");
   const v4Info = log.find((v) => v.version === "v4");
 
-  // 新策略：最新版本（v4）总是快照，v2 和 v3 是差异
-  if (!v4Info?.isSnapshot || v2Info?.isSnapshot || v3Info?.isSnapshot) {
+  // 新策略：最新版本（v4）是快照；优化器可能保留 v2 作为
+  // 混合引用的独立快照，因此 v2 可以是快照，v3 应仍是差异版本。
+  if (!v4Info?.isSnapshot || v3Info?.isSnapshot) {
     throw new Error("快照和差异混合处理失败");
+  }
+
+  if (
+    tv.show("v2") !== "v2" ||
+    tv.show("v3") !== "v3" ||
+    tv.show("v4") !== "v4"
+  ) {
+    throw new Error("优化后的快照和差异内容恢复失败");
   }
 });
 
@@ -1313,6 +1322,205 @@ test("分离式存储 - 大文本性能", () => {
   const tv2 = new TextVersion(result.metadata, result.snapshot);
   if (tv2.latest() !== largeText) {
     throw new Error("大文本导入失败");
+  }
+});
+
+// 测试 21: 反向差异模型下的最优存储选择
+test("最优差异存储 - 选择更短的混合引用并可导入恢复", () => {
+  // v1 -> v2 删除一小段，v3 -> v2 则需要插入长文本。
+  // 因此把 v1 提升为快照并使用 =v1:D20，整体仍短于两个相邻反向差异。
+  const v1 = "A".repeat(20) + "B".repeat(160);
+  const v2 = "B".repeat(160);
+  const v3 = "C";
+
+  const optimized = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: true },
+  );
+  optimized.commit(v1, "v1");
+  optimized.commit(v2, "v2");
+  optimized.commit(v3, "v3");
+
+  const baseline = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: false },
+  );
+  baseline.commit(v1, "v1");
+  baseline.commit(v2, "v2");
+  baseline.commit(v3, "v3");
+
+  const optimizedStorage = optimized.export();
+  const optimizedV2Line = optimizedStorage
+    .split("\n")
+    .find((line) => line.includes(":v2:"));
+  if (!optimizedV2Line || !optimizedV2Line.includes("=v1:")) {
+    throw new Error("第 3 次提交未为 v2 生成 =v1: 混合引用");
+  }
+  const optimizedV1Line = optimizedStorage
+    .split("\n")
+    .find((line) => line.includes(":v1:"));
+  if (!optimizedV1Line || !optimizedV1Line.startsWith(":2:v1:")) {
+    throw new Error("采用混合引用时未将被引用的 v1 提升为独立快照");
+  }
+  const baselineStorage = baseline.export();
+  const baselineV2Line = baselineStorage
+    .split("\n")
+    .find((line) => line.includes(":v2:"));
+  if (!baselineV2Line || baselineV2Line.includes("=v1:")) {
+    throw new Error("禁用优化的基线未使用直接反向差异");
+  }
+  if (optimizedStorage.length >= baselineStorage.length) {
+    throw new Error(
+      `含 v1 快照的最优整体方案没有短于基线: optimized=${optimizedStorage.length}, baseline=${baselineStorage.length}`,
+    );
+  }
+
+  if (
+    optimized.show("v1") !== v1 ||
+    optimized.show("v2") !== v2 ||
+    optimized.show("v3") !== v3
+  ) {
+    throw new Error("混合引用生成后当前实例的版本内容不正确");
+  }
+  if (optimized.latest() !== v3) {
+    throw new Error("混合引用生成后 latest() 不正确");
+  }
+  const latestInfo = optimized.log().find((info) => info.version === "v3");
+  if (!latestInfo?.isSnapshot) {
+    throw new Error("正常提交后的最新版本未保持快照");
+  }
+
+  const imported = new TextVersion(optimizedStorage);
+  if (
+    imported.show("v1") !== v1 ||
+    imported.show("v2") !== v2 ||
+    imported.show("v3") !== v3
+  ) {
+    throw new Error("导入含混合引用的存储后版本内容不正确");
+  }
+  if (imported.latest() !== v3) {
+    throw new Error("导入含混合引用的存储后 latest() 不正确");
+  }
+});
+
+test("最优差异存储 - 启用时存储长度不大于相邻差异基线", () => {
+  const contents = [
+    "document:" + "A".repeat(180) + ":end",
+    "document:" + "A".repeat(180) + ":changed:end",
+    "document:" + "B".repeat(180) + ":changed:end",
+    "document:end",
+  ];
+
+  const optimized = new TextVersion();
+  const baseline = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: false },
+  );
+  contents.forEach((content, index) => {
+    const version = `v${index + 1}`;
+    optimized.commit(content, version);
+    baseline.commit(content, version);
+  });
+
+  const optimizedStorage = optimized.export();
+  const baselineStorage = baseline.export();
+  if (optimizedStorage.length > baselineStorage.length) {
+    throw new Error(
+      `启用最优存储反而更长: optimized=${optimizedStorage.length}, baseline=${baselineStorage.length}`,
+    );
+  }
+
+  contents.forEach((content, index) => {
+    const version = `v${index + 1}`;
+    if (optimized.show(version) !== content) {
+      throw new Error(`optimized 的 ${version} 内容不正确`);
+    }
+    if (baseline.show(version) !== content) {
+      throw new Error(`baseline 的 ${version} 内容不正确`);
+    }
+  });
+});
+
+test("最优差异存储 - 后续提交保留纯引用和重复版本名", () => {
+  const sameContent = "shared:" + "A".repeat(200);
+  const changedContent = "different:" + "B".repeat(200);
+  const finalContent = "final content";
+
+  const tv = new TextVersion();
+  tv.commit(sameContent, "v1");
+  tv.commit(sameContent, "v2");
+  const referenceStorage = tv.export();
+  if (!referenceStorage.includes("=v1")) {
+    throw new Error("重复内容提交未生成纯引用");
+  }
+
+  tv.commit(changedContent, "v3");
+  const afterCommitStorage = tv.export();
+  const v2Line = afterCommitStorage
+    .split("\n")
+    .find((line) => line.includes(":v2:"));
+  if (v2Line !== "2:v2:=v1") {
+    throw new Error(`后续提交错误破坏了 v2 纯引用: ${v2Line ?? "不存在"}`);
+  }
+
+  const imported = new TextVersion(afterCommitStorage);
+  if (
+    imported.show("v1") !== sameContent ||
+    imported.show("v2") !== sameContent ||
+    imported.show("v3") !== changedContent ||
+    imported.latest() !== changedContent
+  ) {
+    throw new Error("保留纯引用后导入恢复的内容不正确");
+  }
+
+  tv.commit(finalContent, "v3");
+  const versions = tv.log().map((info) => info.version);
+  if (!versions.includes("v3#")) {
+    throw new Error("重复版本名未自动添加后缀");
+  }
+  const finalStorage = tv.export();
+  const finalV2Line = finalStorage
+    .split("\n")
+    .find((line) => line.includes(":v2:"));
+  if (finalV2Line !== "2:v2:=v1") {
+    throw new Error(`重复版本名后 v2 纯引用被破坏: ${finalV2Line ?? "不存在"}`);
+  }
+  const finalImported = new TextVersion(finalStorage);
+  if (
+    finalImported.show("v2") !== sameContent ||
+    finalImported.latest() !== finalContent
+  ) {
+    throw new Error("重复版本名后纯引用或 latest() 内容不正确");
+  }
+});
+
+test("最优差异存储 - 多个快照锚点导入后可完整回放", () => {
+  const contents = Array.from({ length: 12 }, (_, index) => {
+    const version = index + 1;
+    const body =
+      version % 3 === 1
+        ? "A".repeat(20) + "B".repeat(160)
+        : version % 3 === 2
+          ? "B".repeat(160)
+          : "C".repeat(200);
+    return `revision-${version}\n${body}`;
+  });
+
+  const tv = new TextVersion();
+  contents.forEach((content, index) => tv.commit(content, `v${index + 1}`));
+
+  const restored = new TextVersion(tv.export());
+  contents.forEach((content, index) => {
+    if (restored.show(`v${index + 1}`) !== content) {
+      throw new Error(`多快照导入后 v${index + 1} 内容恢复失败`);
+    }
+  });
+
+  if (restored.log().filter((info) => info.isSnapshot).length < 2) {
+    throw new Error("测试场景未生成多个快照锚点");
   }
 });
 

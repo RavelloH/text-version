@@ -86,9 +86,9 @@ const tv2 = new TextVersion(loaded);
 
 **v2 的存储方式（反向增量）**：
 
-- **最新版本总是存储完整快照**
+- **非重复提交的最新版本通常存储完整快照**；相同内容提交会使用版本引用
 - 历史版本存储相对于后一个版本的反向差异（从新到旧）
-- 访问最新版本只需读取快照，时间复杂度 O(1)
+- 访问快照型最新版本只需读取快照，时间复杂度 O(1)；重复内容引用会沿引用读取
 
 **示例对比**：
 
@@ -345,7 +345,7 @@ const tv2 = new TextVersion(existingStorage, compressionProvider);
 1. **构造函数参数顺序变化**: 如果使用了压缩提供者，注意参数顺序从 `(compressionProvider)` 变为 `(initialStorage?, compressionProvider?)`
 2. **返回值变化**: `commit`, `reset`, `squash` 现在返回 `this` 而不是 `storage`
 3. **数据格式**: 底层存储格式稍有变化，但 v1 的 storage 数据可以直接在 v2 中使用
-4. **反向增量**: v2 使用反向增量存储，最新版本总是快照，这带来了显著的性能提升
+4. **反向增量**: v2 使用反向增量存储，非重复提交的最新版本通常是快照，这带来了显著的性能提升
 5. **分离式存储**: 使用分离式存储时，必须同时提供 metadata 和 snapshot，且 snapshot 哈希必须匹配
 
 ## 存储格式变化

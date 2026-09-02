@@ -23,8 +23,8 @@ Online preview: [https://ravelloh.github.io/text-version](https://ravelloh.githu
 - **Compression support**: Optional data compression interface
 - **Smart differencing**: Uses LCS algorithm to calculate optimal differences
 - **Version name deduplication**: Automatically handles duplicate version names by adding # suffixes
-- **Optimal storage selection**: Compares all historical versions and automatically selects the storage method with minimum space
-- **Hybrid references**: Supports combination of version references and differential operations for further storage efficiency optimization
+- **Optimal storage selection**: When a new snapshot replaces the previous version, compares its direct reverse diff with references to earlier versions and keeps the shortest representation
+- **Hybrid references**: Supports `=version:operations`, applying operations to an earlier version to reconstruct the previous version while preserving reverse-diff reads
 
 ## Installation
 
@@ -199,7 +199,7 @@ try {
 
 ### Storage Format Description
 
-Uses length-prefixed format internally:
+Uses length-prefixed format internally. For a normal new commit, the newest version is stored as a snapshot and the previous version is represented by the shortest available option:
 
 ```text
 :version_name_length:version_name:content         (snapshot version)
@@ -226,9 +226,9 @@ When version name duplication occurs during submission, the system automatically
 The system automatically compares the following storage methods and selects the one with minimum space:
 
 1. **Normal diff**: Reverse difference with previous version `version_name:R6I5:old_content`
-2. **Hybrid reference**: Reference to historical version + diff `version_name:=historical_version:R6I5:new_content`
+2. **Hybrid reference**: Reference to an earlier version + forward diff to the previous version `version_name:=historical_version:R6I5:previous_content`
 
-**Important**: Under the new strategy, the **latest version is always a snapshot**, historical versions store reverse diffs from new to old.
+**Important**: Under the reverse-diff strategy, a newly submitted non-duplicate latest version is a snapshot, while historical versions store reverse diffs from new to old. A hybrid reference only points to an earlier version, so it cannot form a cycle.
 
 Example:
 
@@ -324,8 +324,8 @@ Besides npm installation, you can also use directly via CDN:
 #### Constructor
 
 ```typescript
-new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider)
-new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider)
+new TextVersion(initialStorage?: string, compressionProvider?: CompressionProvider, options?: TextVersionOptions)
+new TextVersion(metadata: string, snapshot: string, compressionProvider?: CompressionProvider, options?: TextVersionOptions)
 ```
 
 **Parameters:**
@@ -334,6 +334,14 @@ new TextVersion(metadata: string, snapshot: string, compressionProvider?: Compre
 
 - `initialStorage` (optional): Initial version data string to load
 - `compressionProvider` (optional): Custom compression provider
+
+The optional `options` argument can disable optimal diff selection for a baseline comparison:
+
+```javascript
+const baseline = new TextVersion(undefined, undefined, {
+  optimizeDiffStorage: false
+});
+```
 
 **Separate Import:**
 
@@ -421,6 +429,10 @@ interface CompressionProvider {
   decompress(data: string): string;
 }
 
+interface TextVersionOptions {
+  optimizeDiffStorage?: boolean; // Enabled by default; disable for baseline comparisons
+}
+
 interface DiffOperation {
   type: 'retain' | 'insert' | 'delete';
   length?: number;  // Number of characters for retain and delete operations
@@ -434,10 +446,11 @@ interface DiffOperation {
 - **Time complexity**:
   - **Latest version**: O(1) time complexity (direct snapshot read) ⚡
   - **Historical versions**: Requires reverse application of diffs from latest snapshot, time depends on version distance
-- **Snapshot strategy**: Latest version is always a snapshot, historical versions store reverse diffs
+- **Snapshot strategy**: A non-duplicate latest version is a snapshot; identical content may use a reference, while historical versions use reverse diffs or safe hybrid references
 - **Compression**: Can be further optimized through custom compression providers
 - **Storage optimization**: Use `squash` method periodically to clean up historical versions and prevent unlimited storage growth
 - **Use cases**: Particularly suitable for applications that frequently access the latest version (e.g., real-time editors, collaborative documents)
+- **Benchmark**: Run `pnpm tsx tests/performance-test.ts` to compare optimized and adjacent-diff-only storage across commit and read workloads
 
 ### Best Practices
 

@@ -3,4 +3,5 @@ export type {
   DiffOperation,
   VersionInfo,
   CompressionProvider,
+  TextVersionOptions,
 } from "./TextVersion";

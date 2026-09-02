@@ -1,92 +1,309 @@
 /**
- * 性能对比测试
- * 对比新旧策略在获取最新版本时的性能差异
+ * 反向差异存储策略性能对比。
+ *
+ * 该脚本只输出比较数据，不设置固定的性能通过阈值；这样可以在不同机器
+ * 上重复运行，并观察 optimized 与 baseline 的相对变化。
  */
 
 import { TextVersion } from "../src/TextVersion";
 import RLog from "rlog-js";
 
+type Variant = "optimized" | "baseline";
+
+interface BenchmarkResult {
+  name: string;
+  optimizedMs: number;
+  baselineMs: number;
+  optimizedStorageBefore: number;
+  optimizedStorageAfter: number;
+  baselineStorageBefore: number;
+  baselineStorageAfter: number;
+}
+
 const rlog = new RLog();
 
-rlog.log("=== 性能对比测试 ===");
+const versionCount = 90;
+const appendCount = 30;
+const readIterations = 2000;
+const showIterations = 500;
+const warmupIterations = 5;
 
-// 测试配置
-const versionCount = 1000;
-const contentBase = "This is test content version ";
-
-console.time("总测试时间");
-rlog.log(`准备进行包含 ${versionCount} 个版本的性能测试...`);
-
-// 创建测试实例并添加大量版本
-
-const tv = new TextVersion();
-
-const generateStart = performance.now();
-for (let i = 1; i <= versionCount; i++) {
-  tv.commit(contentBase + i, `v${i}`);
-  rlog.progress(i, versionCount);
+function createTextVersion(
+  optimizeDiffStorage: boolean,
+  initialStorage?: string,
+): TextVersion {
+  return new TextVersion(
+    initialStorage,
+    undefined,
+    { optimizeDiffStorage },
+  );
 }
-rlog.log(`已创建 ${versionCount} 个版本`);
-const generateEnd = performance.now();
-const generateTime = generateEnd - generateStart;
-rlog.log(`  - 执行 ${versionCount} 次 commit(): ${generateTime.toFixed(2)}ms`);
-rlog.log(`  - 平均每次: ${(generateEnd / versionCount).toFixed(4)}ms`);
 
-// 测试1: 获取最新版本的性能（新策略的优势）
-rlog.log("测试 latest() 方法性能:");
-const latestStart = performance.now();
-for (let i = 0; i < 10000; i++) {
-  const content = tv.latest();
-  if (i === 0 && content !== contentBase + versionCount) {
-    throw new Error("latest() 返回内容不正确");
+function contentFor(version: number): string {
+  const body =
+    version % 3 === 1
+      ? "A".repeat(20) + "B".repeat(160)
+      : version % 3 === 2
+        ? "B".repeat(160)
+        : "C".repeat(200);
+
+  return ["performance benchmark document", `revision=${version}`, body].join(
+    "\n",
+  );
+}
+
+function storageLength(tv: TextVersion): number {
+  return tv.export().length;
+}
+
+function assertContent(
+  variant: Variant,
+  operation: string,
+  actual: string | null,
+  expected: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `${variant} ${operation} 返回内容不正确: 期望长度 ${expected.length}, 实际长度 ${actual?.length ?? "null"}`,
+    );
   }
 }
 
-const latestEnd = performance.now();
-const latestTime = latestEnd - latestStart;
-rlog.log(`  - 执行 10000 次 latest(): ${latestTime.toFixed(2)}ms`);
-rlog.log(`  - 平均每次: ${(latestTime / 10000).toFixed(4)}ms`);
-
-// 测试2: 获取中间版本的性能
-const middleVersion = `v${Math.floor(versionCount / 2)}`;
-rlog.log(`测试 show('${middleVersion}') 方法性能:`);
-const middleStart = performance.now();
-for (let i = 0; i < 1000; i++) {
-  const content = tv.show(middleVersion);
-  if (i === 0 && content !== contentBase + Math.floor(versionCount / 2)) {
-    throw new Error(`show('${middleVersion}') 返回内容不正确`);
+function warmupRead(
+  tv: TextVersion,
+  variant: Variant,
+  expectedLatest: string,
+  expectedMiddle: string,
+  expectedFirst: string,
+): void {
+  for (let i = 0; i < warmupIterations; i++) {
+    assertContent(variant, "warmup latest()", tv.latest(), expectedLatest);
+    assertContent(
+      variant,
+      "warmup show(middle)",
+      tv.show(`v${Math.floor(versionCount / 2)}`),
+      expectedMiddle,
+    );
+    assertContent(variant, "warmup show(v1)", tv.show("v1"), expectedFirst);
   }
 }
-const middleEnd = performance.now();
-const middleTime = middleEnd - middleStart;
-rlog.log(`  - 执行 1000 次 show(): ${middleTime.toFixed(2)}ms`);
-rlog.log(`  - 平均每次: ${(middleTime / 1000).toFixed(4)}ms`);
 
-// 测试3: 获取第一个版本的性能
-rlog.log("测试 show('v1') 方法性能:");
-const firstStart = performance.now();
-for (let i = 0; i < 1000; i++) {
-  const content = tv.show("v1");
-  if (i === 0 && content !== contentBase + 1) {
-    throw new Error("show('v1') 返回内容不正确");
+function measureRead(
+  name: string,
+  optimized: TextVersion,
+  baseline: TextVersion,
+  operation: string,
+  expected: string,
+  iterations: number,
+  read: (tv: TextVersion) => string | null,
+): BenchmarkResult {
+  const optimizedStorageBefore = storageLength(optimized);
+  const baselineStorageBefore = storageLength(baseline);
+
+  const optimizedStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    assertContent("optimized", operation, read(optimized), expected);
   }
-}
-const firstEnd = performance.now();
-const firstTime = firstEnd - firstStart;
-rlog.log(`  - 执行 1000 次 show(): ${firstTime.toFixed(2)}ms`);
-rlog.log(`  - 平均每次: ${(firstTime / 1000).toFixed(4)}ms`);
+  const optimizedMs = performance.now() - optimizedStart;
 
-// 测试4: commit 新版本的性能
-rlog.log("测试 commit() 方法性能:");
-const tv2 = new TextVersion();
-for (let i = 1; i <= 100; i++) {
-  tv2.commit(contentBase + i, `v${i}`);
+  const baselineStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    assertContent("baseline", operation, read(baseline), expected);
+  }
+  const baselineMs = performance.now() - baselineStart;
+
+  return {
+    name,
+    optimizedMs,
+    baselineMs,
+    optimizedStorageBefore,
+    optimizedStorageAfter: storageLength(optimized),
+    baselineStorageBefore,
+    baselineStorageAfter: storageLength(baseline),
+  };
 }
-const commitStart = performance.now();
-for (let i = 101; i <= 200; i++) {
-  tv2.commit(contentBase + i, `v${i}`);
+
+function measureBatchCommit(): {
+  optimized: TextVersion;
+  baseline: TextVersion;
+  result: BenchmarkResult;
+} {
+  const optimized = createTextVersion(true);
+  const baseline = createTextVersion(false);
+
+  const optimizedStart = performance.now();
+  for (let i = 1; i <= versionCount; i++) {
+    optimized.commit(contentFor(i), `v${i}`);
+  }
+  const optimizedMs = performance.now() - optimizedStart;
+
+  const baselineStart = performance.now();
+  for (let i = 1; i <= versionCount; i++) {
+    baseline.commit(contentFor(i), `v${i}`);
+  }
+  const baselineMs = performance.now() - baselineStart;
+
+  return {
+    optimized,
+    baseline,
+    result: {
+      name: `批量 commit (${versionCount} 个版本)`,
+      optimizedMs,
+      baselineMs,
+      optimizedStorageBefore: 0,
+      optimizedStorageAfter: storageLength(optimized),
+      baselineStorageBefore: 0,
+      baselineStorageAfter: storageLength(baseline),
+    },
+  };
 }
-const commitEnd = performance.now();
-const commitTime = commitEnd - commitStart;
-rlog.log(`  - 提交 100 个版本: ${commitTime.toFixed(2)}ms`);
-rlog.log(`  - 平均每次: ${(commitTime / 100).toFixed(4)}ms`);
+
+function measureAppendCommit(
+  optimizedSource: TextVersion,
+  baselineSource: TextVersion,
+): BenchmarkResult {
+  // 从各自的导出数据重新导入，避免把批量 commit 期间的任意缓存状态
+  // 当作追加提交的唯一输入。
+  const optimized = createTextVersion(true, optimizedSource.export());
+  const baseline = createTextVersion(false, baselineSource.export());
+  const expectedLatest = contentFor(versionCount);
+  const expectedMiddle = contentFor(Math.floor(versionCount / 2));
+  const expectedFirst = contentFor(1);
+
+  warmupRead(
+    optimized,
+    "optimized",
+    expectedLatest,
+    expectedMiddle,
+    expectedFirst,
+  );
+  warmupRead(
+    baseline,
+    "baseline",
+    expectedLatest,
+    expectedMiddle,
+    expectedFirst,
+  );
+
+  const optimizedStorageBefore = storageLength(optimized);
+  const baselineStorageBefore = storageLength(baseline);
+
+  const optimizedStart = performance.now();
+  for (let i = versionCount + 1; i <= versionCount + appendCount; i++) {
+    optimized.commit(contentFor(i), `v${i}`);
+  }
+  const optimizedMs = performance.now() - optimizedStart;
+
+  const baselineStart = performance.now();
+  for (let i = versionCount + 1; i <= versionCount + appendCount; i++) {
+    baseline.commit(contentFor(i), `v${i}`);
+  }
+  const baselineMs = performance.now() - baselineStart;
+
+  const finalExpected = contentFor(versionCount + appendCount);
+  assertContent("optimized", "追加 commit 后 latest()", optimized.latest(), finalExpected);
+  assertContent("baseline", "追加 commit 后 latest()", baseline.latest(), finalExpected);
+
+  return {
+    name: `追加 commit (${appendCount} 个版本)`,
+    optimizedMs,
+    baselineMs,
+    optimizedStorageBefore,
+    optimizedStorageAfter: storageLength(optimized),
+    baselineStorageBefore,
+    baselineStorageAfter: storageLength(baseline),
+  };
+}
+
+function formatRatio(optimizedMs: number, baselineMs: number): string {
+  return baselineMs === 0 ? "n/a" : `${(optimizedMs / baselineMs).toFixed(3)}x`;
+}
+
+function formatDelta(before: number, after: number): string {
+  const delta = after - before;
+  return `${before}->${after} (${delta >= 0 ? "+" : ""}${delta})`;
+}
+
+function formatStorageRatio(optimized: number, baseline: number): string {
+  return baseline === 0 ? "n/a" : `${(optimized / baseline).toFixed(3)}x`;
+}
+
+function logResult(result: BenchmarkResult): void {
+  rlog.log(
+    `${result.name}: optimized=${result.optimizedMs.toFixed(2)}ms, ` +
+      `baseline=${result.baselineMs.toFixed(2)}ms, ` +
+      `optimized/baseline=${formatRatio(result.optimizedMs, result.baselineMs)}, ` +
+      `storage optimized=${formatDelta(result.optimizedStorageBefore, result.optimizedStorageAfter)}, ` +
+      `baseline=${formatDelta(result.baselineStorageBefore, result.baselineStorageAfter)}, ` +
+      `final storage optimized/baseline=${formatStorageRatio(result.optimizedStorageAfter, result.baselineStorageAfter)}`,
+  );
+}
+
+rlog.log("=== 反向差异存储性能对比测试 ===");
+rlog.log(
+  `准备 ${versionCount} 个批量版本、${appendCount} 个追加版本；读取操作先预热 ${warmupIterations} 次。`,
+);
+
+const results: BenchmarkResult[] = [];
+const batch = measureBatchCommit();
+results.push(batch.result);
+
+const expectedLatest = contentFor(versionCount);
+const expectedMiddle = contentFor(Math.floor(versionCount / 2));
+const expectedFirst = contentFor(1);
+
+// 两个实例执行完全相同的预热读取，避免只测到 optimized 的缓存状态。
+warmupRead(
+  batch.optimized,
+  "optimized",
+  expectedLatest,
+  expectedMiddle,
+  expectedFirst,
+);
+warmupRead(
+  batch.baseline,
+  "baseline",
+  expectedLatest,
+  expectedMiddle,
+  expectedFirst,
+);
+
+results.push(
+  measureRead(
+    `latest() (${readIterations} 次)`,
+    batch.optimized,
+    batch.baseline,
+    "latest()",
+    expectedLatest,
+    readIterations,
+    (tv) => tv.latest(),
+  ),
+);
+results.push(
+  measureRead(
+    `show 中间版本 (${showIterations} 次)`,
+    batch.optimized,
+    batch.baseline,
+    "show(middle)",
+    expectedMiddle,
+    showIterations,
+    (tv) => tv.show(`v${Math.floor(versionCount / 2)}`),
+  ),
+);
+results.push(
+  measureRead(
+    `show 首版本 (${showIterations} 次)`,
+    batch.optimized,
+    batch.baseline,
+    "show(v1)",
+    expectedFirst,
+    showIterations,
+    (tv) => tv.show("v1"),
+  ),
+);
+
+results.push(measureAppendCommit(batch.optimized, batch.baseline));
+
+rlog.log("\n指标（耗时、optimized/baseline 比率、存储长度变化）:");
+results.forEach(logResult);
+rlog.log("=== 性能对比测试完成 ===");
