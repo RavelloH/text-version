@@ -13,7 +13,7 @@
 - **`reset`**: 重置到指定版本（类似 git reset --hard），保留目标版本及之前的所有版本，删除之后的版本
 - **`squash`**: 保留目标版本及之后的所有版本，删除之前的版本，减少存储空间
 
-### 存储格式优化特性
+### 存储与版本管理特性
 
 - **存储格式优化**: 使用紧凑的差异存储格式
 - **重复检测**: 自动避免存储相同的内容
@@ -21,8 +21,9 @@
 - **压缩支持**: 可选的数据压缩接口
 - **智能差异**: 使用 LCS 算法计算最优差异
 - **版本名去重**: 自动处理重复版本名，通过添加#后缀避免冲突
-- **最优存储选择**: 新快照替换上一版本时，对比直接反向差异和更早版本引用，保留占用空间最小的表示
-- **混合引用**: 支持 `=版本:操作序列`，从更早版本应用正向差异还原上一版本，同时保持反向差异读取模型
+- **默认相邻反向差异（v2.2.0 起）**：新版本仅计算与相邻版本的反向差异，不再默认扫描完整历史
+- **可选最优存储选择**：设置 `optimizeDiffStorage: true` 后可搜索更早版本的引用方案，以更高的提交计算成本换取潜在的存储空间节省
+- **混合引用兼容性**：仍可读取已有的 `=版本:操作序列` 历史数据，包括旧版本启用最优存储选择时生成的内容
 
 ## 安装
 
@@ -342,13 +343,17 @@ new TextVersion(metadata: string, snapshot: string, compressionProvider?: Compre
 - `initialStorage` (可选): 要加载的初始版本数据字符串
 - `compressionProvider` (可选): 自定义压缩提供者
 
-可选的 `options` 参数可以关闭最优差异选择，用于进行基准对比：
+从 **v2.2.0** 起，`optimizeDiffStorage` **默认值为 `false`**。新提交仍使用相邻版本的反向差异和相同正文的版本引用，只是不再默认搜索整个历史以寻找更短的存储表示。如果需要，可显式开启这一计算成本更高的优化：
 
 ```javascript
-const baseline = new TextVersion(undefined, undefined, {
-  optimizeDiffStorage: false
+const tv = new TextVersion(); // 默认：optimizeDiffStorage: false
+
+const spaceOptimized = new TextVersion(undefined, undefined, {
+  optimizeDiffStorage: true
 });
 ```
+
+该选项只影响**后续提交**的存储方式。已有历史（包括旧版生成的混合引用）仍可直接读取，不需要开启优化，也无需进行存储格式迁移。
 
 **分离式导入：**
 
@@ -437,7 +442,7 @@ interface CompressionProvider {
 }
 
 interface TextVersionOptions {
-  optimizeDiffStorage?: boolean; // 默认开启；可关闭以进行基准对比
+  optimizeDiffStorage?: boolean; // v2.2.0 起默认 false；设为 true 可开启全历史最优存储搜索
 }
 
 interface DiffOperation {
@@ -453,11 +458,12 @@ interface DiffOperation {
 - **时间复杂度**：
   - **最新版本**：O(1) 时间复杂度（直接读取快照）⚡
   - **历史版本**：需要从最新快照反向应用差异，时间取决于版本距离
-- **快照策略**：非重复提交的最新版本是快照；相同内容可以使用引用，历史版本使用反向差异或安全的混合引用
+- **快照策略**：非重复提交的最新版本是快照；相同内容可以使用引用，历史版本默认采用相邻反向差异，同时兼容旧版混合引用
+- **提交性能**：全历史最优存储搜索改为按需开启；它会对比更早的历史版本，随着版本数量增加可能显著拖慢提交，而且不一定节省空间
 - **压缩**：可通过自定义压缩提供者进一步优化存储
 - **存储优化**：使用 `squash` 方法定期清理历史版本，避免存储空间无限增长
 - **适用场景**：特别适合频繁访问最新版本的应用（如实时编辑器、协同文档）
-- **基准测试**：运行 `pnpm tsx tests/performance-test.ts`，可对比最优存储与仅相邻反向差异策略在提交和读取场景下的指标
+- **基准测试**：安装或提供 `tsx` 后运行 `pnpm exec tsx tests/performance-test.ts`，可对比可选的全历史最优存储与默认相邻差异策略在提交和读取场景下的表现
 
 ### 最佳实践
 

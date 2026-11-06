@@ -1302,6 +1302,83 @@ test("分离式存储 - 特殊字符处理", () => {
   }
 });
 
+test("分离式存储 - 快照中 $ 特殊替换序列保持原样", () => {
+  const specialSequences = ["$$", "$&", "$`", "$'", "$1", "$<name>"];
+  const compressionProvider = {
+    compress: (data: string) => Buffer.from(data).toString("base64"),
+    decompress: (data: string) => Buffer.from(data, "base64").toString(),
+  };
+  for (const optimizeDiffStorage of [true, false]) {
+    for (const compression of [undefined, compressionProvider]) {
+      for (const sequence of specialSequences) {
+        const snapshot = `Markdown 公式与代码：\n前文\n${sequence}\n后文\n`;
+        const tv = new TextVersion(
+          undefined,
+          compression,
+          { optimizeDiffStorage },
+        );
+        tv.commit("历史版本 v1", "v1");
+        tv.commit("历史版本 v2", "v2");
+        tv.commit(snapshot, "v3");
+        const separated = tv.export("separate");
+        if (typeof separated === "string") {
+          throw new Error("分离式导出应返回对象");
+        }
+        const restored = new TextVersion(
+          separated.metadata,
+          separated.snapshot,
+          compression,
+          { optimizeDiffStorage },
+        );
+        if (restored.latest() !== snapshot) {
+          throw new Error(
+            `快照内容发生变化：${JSON.stringify(sequence)}，压缩=${!!compression}，优化=${optimizeDiffStorage}`,
+          );
+        }
+        if (restored.log().length !== 3) {
+          throw new Error(`历史记录异常：${JSON.stringify(sequence)}`);
+        }
+        for (const [version, expected] of [
+          ["v1", "历史版本 v1"],
+          ["v2", "历史版本 v2"],
+          ["v3", snapshot],
+        ]) {
+          if (restored.show(version) !== expected) {
+            throw new Error(
+              `恢复 ${version} 失败：${JSON.stringify(sequence)}，压缩=${!!compression}，优化=${optimizeDiffStorage}`,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+test("分离式存储 - 多次导入导出含公式和美元符号的快照", () => {
+  const original = [
+    "# 公式",
+    "$$x^2 + y^2 = z^2$$",
+    "行内：$E=mc^2$；特殊字符 $$、$&、$`、$'。",
+    "",
+  ].join("\n");
+  let tv = new TextVersion();
+  tv.commit("初始内容", "v1");
+  tv.commit(original, "v2");
+  for (let i = 0; i < 4; i++) {
+    const data = tv.export("separate");
+    if (typeof data === "string") {
+      throw new Error("分离式导出应返回对象");
+    }
+    tv = new TextVersion(data.metadata, data.snapshot);
+    if (tv.latest() !== original || tv.show("v1") !== "初始内容") {
+      throw new Error(`第 ${i + 1} 次导入导出后内容不一致`);
+    }
+    if (tv.log().length !== 2) {
+      throw new Error(`第 ${i + 1} 次导入导出后产生重复记录`);
+    }
+  }
+});
+
 test("分离式存储 - 大文本性能", () => {
   const tv1 = new TextVersion();
   const largeText = "A".repeat(10000);
@@ -1322,6 +1399,56 @@ test("分离式存储 - 大文本性能", () => {
   const tv2 = new TextVersion(result.metadata, result.snapshot);
   if (tv2.latest() !== largeText) {
     throw new Error("大文本导入失败");
+  }
+});
+
+// 测试：默认关闭全历史差分搜索，显式开启仍可生成紧凑的混合引用。
+test("差分存储 - 默认只使用相邻版本反向差异", () => {
+  const contents = [
+    "A".repeat(20) + "B".repeat(160),
+    "B".repeat(160),
+    "C",
+  ];
+  const build = (tv: TextVersion): TextVersion => {
+    contents.forEach((content, index) => tv.commit(content, `v${index + 1}`));
+    return tv;
+  };
+  const defaultInstance = build(new TextVersion());
+  const explicitBaseline = build(
+    new TextVersion(undefined, undefined, { optimizeDiffStorage: false }),
+  );
+  const explicitOptimized = build(
+    new TextVersion(undefined, undefined, { optimizeDiffStorage: true }),
+  );
+  if (defaultInstance.export() !== explicitBaseline.export()) {
+    throw new Error("默认存储策略不是相邻版本反向差异");
+  }
+  if (defaultInstance.export() === explicitOptimized.export()) {
+    throw new Error("测试场景未区分默认与显式开启优化的结果");
+  }
+  const importedOptimized = new TextVersion(explicitOptimized.export());
+  for (let i = 0; i < contents.length; i++) {
+    if (importedOptimized.show(`v${i + 1}`) !== contents[i]) {
+      throw new Error("默认配置不能读取旧的混合引用历史");
+    }
+  }
+});
+
+test("差分存储 - 省略设置后导入分离式历史仍为相邻差分策略", () => {
+  const original = new TextVersion();
+  original.commit("初始", "v1");
+  original.commit("包含 $$ 与 $& 的公式文本", "v2");
+  const separate = original.export("separate");
+  if (typeof separate === "string") {
+    throw new Error("分离式导出应返回对象");
+  }
+  const restored = new TextVersion(separate.metadata, separate.snapshot);
+  restored.commit("新内容", "v3");
+  if (restored.show("v1") !== "初始" || restored.show("v2") !== "包含 $$ 与 $& 的公式文本") {
+    throw new Error("默认策略切换后分离式历史恢复失败");
+  }
+  if (restored.latest() !== "新内容") {
+    throw new Error("默认策略切换后追加提交失败");
   }
 });
 
@@ -1413,7 +1540,11 @@ test("最优差异存储 - 启用时存储长度不大于相邻差异基线", ()
     "document:end",
   ];
 
-  const optimized = new TextVersion();
+  const optimized = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: true },
+  );
   const baseline = new TextVersion(
     undefined,
     undefined,
@@ -1449,7 +1580,11 @@ test("最优差异存储 - 后续提交保留纯引用和重复版本名", () =>
   const changedContent = "different:" + "B".repeat(200);
   const finalContent = "final content";
 
-  const tv = new TextVersion();
+  const tv = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: true },
+  );
   tv.commit(sameContent, "v1");
   tv.commit(sameContent, "v2");
   const referenceStorage = tv.export();
@@ -1509,7 +1644,11 @@ test("最优差异存储 - 多个快照锚点导入后可完整回放", () => {
     return `revision-${version}\n${body}`;
   });
 
-  const tv = new TextVersion();
+  const tv = new TextVersion(
+    undefined,
+    undefined,
+    { optimizeDiffStorage: true },
+  );
   contents.forEach((content, index) => tv.commit(content, `v${index + 1}`));
 
   const restored = new TextVersion(tv.export());

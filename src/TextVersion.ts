@@ -31,7 +31,7 @@ export interface CompressionProvider {
 export interface TextVersionOptions {
   /**
    * 是否在提交时比较直接反向差异、已有引用和混合引用。
-   * 默认为 true；关闭后只使用相邻版本的反向差异，便于基准对比。
+   * 默认为 false；开启后额外搜索历史版本的引用方案，以更多计算量换取潜在的存储节省。
    */
   optimizeDiffStorage?: boolean;
 }
@@ -80,7 +80,7 @@ export class TextVersion {
       ? undefined
       : compressionProviderOrOptions;
     this.optimizeDiffStorage =
-      options?.optimizeDiffStorage ?? inlineOptions?.optimizeDiffStorage ?? true;
+      options?.optimizeDiffStorage ?? inlineOptions?.optimizeDiffStorage ?? false;
 
     // 先设置compression provider，因为 mergeSnapshotIntoStorage 需要用到
     if (typeof snapshotOrCompression === "string") {
@@ -533,7 +533,8 @@ export class TextVersion {
     // 替换占位符
     const placeholder = `${TextVersion.SNAPSHOT_PLACEHOLDER_PREFIX}${expectedHash}${TextVersion.SNAPSHOT_PLACEHOLDER_SUFFIX}`;
     const escapedSnapshot = this.escapeString(snapshot);
-    const merged = decompressed.replace(placeholder, escapedSnapshot);
+    // 使用函数形式保留快照中的原始 $ 字符，避免 $$、$&、$`、$' 被解释为替换指令。
+    const merged = decompressed.replace(placeholder, () => escapedSnapshot);
 
     return this.compress(merged);
   }

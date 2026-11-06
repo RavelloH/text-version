@@ -15,7 +15,7 @@ Online preview: [https://ravelloh.github.io/text-version](https://ravelloh.githu
 - **`reset`**: Reset to specified version (similar to git reset --hard), keep the target version and all versions before it, delete versions after it
 - **`squash`**: Keep the target version and all versions after it, delete versions before it to reduce storage space
 
-### Storage Format Optimization Features
+### Storage and Versioning Features
 
 - **Storage format optimization**: Uses compact differential storage format
 - **Duplicate detection**: Automatically avoids storing identical content
@@ -23,8 +23,9 @@ Online preview: [https://ravelloh.github.io/text-version](https://ravelloh.githu
 - **Compression support**: Optional data compression interface
 - **Smart differencing**: Uses LCS algorithm to calculate optimal differences
 - **Version name deduplication**: Automatically handles duplicate version names by adding # suffixes
-- **Optimal storage selection**: When a new snapshot replaces the previous version, compares its direct reverse diff with references to earlier versions and keeps the shortest representation
-- **Hybrid references**: Supports `=version:operations`, applying operations to an earlier version to reconstruct the previous version while preserving reverse-diff reads
+- **Adjacent reverse diffs by default (v2.2.0+)**: New commits use differences between consecutive versions without searching the full history
+- **Optional optimal storage selection**: Set `optimizeDiffStorage: true` to search earlier versions for a smaller representation at the cost of substantially slower commits on long histories
+- **Hybrid reference compatibility**: Supports reading existing `=version:operations` histories, including data created with optimal storage selection enabled
 
 ## Installation
 
@@ -335,13 +336,17 @@ new TextVersion(metadata: string, snapshot: string, compressionProvider?: Compre
 - `initialStorage` (optional): Initial version data string to load
 - `compressionProvider` (optional): Custom compression provider
 
-The optional `options` argument can disable optimal diff selection for a baseline comparison:
+Since **v2.2.0**, `optimizeDiffStorage` is **`false` by default**. New versions still use adjacent reverse differences and identical-content references; only the full-history search for a smaller representation is disabled. To explicitly enable that more expensive search:
 
 ```javascript
-const baseline = new TextVersion(undefined, undefined, {
-  optimizeDiffStorage: false
+const tv = new TextVersion(); // default: optimizeDiffStorage: false
+
+const spaceOptimized = new TextVersion(undefined, undefined, {
+  optimizeDiffStorage: true
 });
 ```
+
+This setting controls how **new commits** are stored. Existing histories, including hybrid references created by earlier versions, remain readable without enabling the optimization.
 
 **Separate Import:**
 
@@ -430,7 +435,7 @@ interface CompressionProvider {
 }
 
 interface TextVersionOptions {
-  optimizeDiffStorage?: boolean; // Enabled by default; disable for baseline comparisons
+  optimizeDiffStorage?: boolean; // Default: false (v2.2.0+); true enables full-history storage search
 }
 
 interface DiffOperation {
@@ -446,11 +451,12 @@ interface DiffOperation {
 - **Time complexity**:
   - **Latest version**: O(1) time complexity (direct snapshot read) ⚡
   - **Historical versions**: Requires reverse application of diffs from latest snapshot, time depends on version distance
-- **Snapshot strategy**: A non-duplicate latest version is a snapshot; identical content may use a reference, while historical versions use reverse diffs or safe hybrid references
+- **Snapshot strategy**: A non-duplicate latest version is a snapshot; identical content may use a reference, while historical versions use adjacent reverse diffs by default; previously stored hybrid references remain supported
+- **Commit performance**: Full-history optimization is opt-in because it compares candidates against older versions and can make commits significantly slower as the history grows, often without reducing storage size
 - **Compression**: Can be further optimized through custom compression providers
 - **Storage optimization**: Use `squash` method periodically to clean up historical versions and prevent unlimited storage growth
 - **Use cases**: Particularly suitable for applications that frequently access the latest version (e.g., real-time editors, collaborative documents)
-- **Benchmark**: Run `pnpm tsx tests/performance-test.ts` to compare optimized and adjacent-diff-only storage across commit and read workloads
+- **Benchmark**: Run `pnpm exec tsx tests/performance-test.ts` (with `tsx` available) to compare optional full-history optimization against the default adjacent-diff strategy
 
 ### Best Practices
 
